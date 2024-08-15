@@ -97,7 +97,7 @@ jobs:
             mkdir -p "./ssl/$domain/rsa"
             issue_and_install_certificate "$domain" "EC"
             issue_and_install_certificate "$domain" "RSA"
-          done < cloudflare_domains_list.txt
+          done < cloudflare_domains_list.txt || true  # 忽略非致命错误
 
       - name: Validate new certificates
         run: |
