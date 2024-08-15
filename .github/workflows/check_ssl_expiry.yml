@@ -63,10 +63,11 @@ jobs:
 
           trigger_renewal=false
           expiring_domains=""
-          for domain_dir in ./ssl/*/; do
-            domain=$(basename "$domain_dir")
-            ec_result=$(check_certificate "$domain_dir/$domain.cer")
-            rsa_result=$(check_certificate "$domain_dir/rsa/$domain.cer")
+          
+          # 仅检查 cloudflare_domains_list.txt 中的域名
+          while IFS= read -r domain || [ -n "$domain" ]; do
+            ec_result=$(check_certificate "./ssl/$domain/$domain.cer")
+            rsa_result=$(check_certificate "./ssl/$domain/rsa/$domain.cer")
             
             IFS='|' read -r ec_expiry ec_days <<< "$ec_result"
             IFS='|' read -r rsa_expiry rsa_days <<< "$rsa_result"
@@ -77,7 +78,7 @@ jobs:
               trigger_renewal=true
               expiring_domains="$expiring_domains $domain"
             fi
-          done
+          done < cloudflare_domains_list.txt
 
           git add CHECK_LIST.md
           git commit -m "Update CHECK_LIST.md with certificate expiry dates and execution time at $CURRENT_TIME"
@@ -102,11 +103,11 @@ jobs:
               fi
             }
 
-            for domain_dir in ./ssl/*/; do
-              domain=$(basename "$domain_dir")
+            # 仅更新 cloudflare_domains_list.txt 中的域名证书
+            while IFS= read -r domain || [ -n "$domain" ]; do
               renew_certificates "$domain" "EC"
               renew_certificates "$domain" "RSA"
-            done
+            done < cloudflare_domains_list.txt
             
             # Send Bark notification
             BARK_URL="${{ secrets.BARK_URL }}"
