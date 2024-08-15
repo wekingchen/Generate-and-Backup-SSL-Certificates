@@ -6,9 +6,12 @@ on:
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
+  CF_TOKEN: ${{ secrets.CF_TOKEN }}
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
   DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
+  ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
 jobs:
   generate-and-backup:
@@ -23,7 +26,7 @@ jobs:
         with:
           path: |
             /usr/bin/rclone
-            ~/.acme.sh
+            /home/runner/.acme.sh
           key: ${{ runner.os }}-rclone-acme
 
       - name: Install rclone and acme.sh
@@ -45,6 +48,9 @@ jobs:
           echo "SSL Certificates synced from Dropbox."
 
       - name: Generate SSL Certificates if needed
+        env:
+          CF_Token: ${{ secrets.CF_TOKEN }}
+          CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           check_certificate_validity() {
             cert_path=$1
@@ -69,22 +75,31 @@ jobs:
             key_file="$cert_path/$domain.key"
             if ! check_certificate_validity "$cert_file"; then
               echo "Generating $cert_type certificate for $domain..."
-              $ACME --issue --dns dns_cf -d "$domain" -d "*.$domain" || { echo "Failed to issue certificate for $domain"; return 1; }
-              $ACME --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; return 1; }
-              echo "Generated and installed $cert_type certificate for $domain"
+              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" 2>&1)
+              echo "$issue_output"
+              if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
+                echo "Skipping certificate renewal for $domain as it's not yet due."
+              elif echo "$issue_output" | grep -q 'success'; then
+                $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; return 1; }
+                echo "Generated and installed $cert_type certificate for $domain"
+              else
+                echo "Failed to issue certificate for $domain"
+                return 1
+              fi
             else
               echo "Existing $cert_type certificate for $domain is still valid, skipping renewal."
             fi
           }
 
-          # 循环检查 cloudflare_domains_list.txt 中的域名
+          # 并行处理域名
           while IFS= read -r domain || [ -n "$domain" ]; do
-            echo "Processing domain: $domain"
-            mkdir -p "./ssl/$domain/rsa"
-            # 为每个域名生成 EC 和 RSA 证书
-            issue_and_install_certificate "$domain" "EC"
-            issue_and_install_certificate "$domain" "RSA"
+            {
+              mkdir -p "./ssl/$domain/rsa"
+              issue_and_install_certificate "$domain" "EC"
+              issue_and_install_certificate "$domain" "RSA"
+            } &
           done < cloudflare_domains_list.txt
+          wait  # 等待所有并行任务完成
 
       - name: Validate new certificates
         run: |
