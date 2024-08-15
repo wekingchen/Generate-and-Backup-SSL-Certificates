@@ -11,7 +11,8 @@ env:
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
   DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
-  ACME_PATH: "/home/runner/.acme.sh/acme.sh"
+  ACME_PATH: "$HOME/.acme.sh/acme.sh"
+  PATH: $HOME/.local/bin:$PATH
 
 jobs:
   generate-and-backup:
@@ -25,14 +26,14 @@ jobs:
         uses: actions/cache@v3
         with:
           path: |
-            /usr/bin/rclone
-            /home/runner/.acme.sh
-          key: ${{ runner.os }}-rclone-acme
+            $HOME/.local/bin/rclone
+            $HOME/.acme.sh
+          key: ${{ runner.os }}-rclone-acme-v2
 
       - name: Install rclone and acme.sh
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          curl https://rclone.org/install.sh | sudo bash
+          curl https://rclone.org/install.sh | sudo bash -s -- --install-dir $HOME/.local/bin
           curl https://get.acme.sh | sh -s email=$EMAIL
         
       - name: Configure rclone
@@ -52,7 +53,7 @@ jobs:
           CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
-          set -x  # 打开命令追踪模式，捕获所有输出
+          set -x
           
           check_certificate_validity() {
             cert_path=$1
@@ -70,15 +71,15 @@ jobs:
 
           issue_and_install_certificate() {
             domain=$1
-            cert_type=$2 # "EC" or "RSA"
+            cert_type=$2
             cert_path="./ssl/$domain"
             [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
             if ! check_certificate_validity "$cert_file"; then
               echo "Generating $cert_type certificate for $domain..."
-              issue_output=$(timeout 300 $ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --dnssleep 120 --debug 2>&1)
-              echo "$issue_output"  # 手动输出 acme.sh 命令的结果
+              issue_output=$(timeout 300 $ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --dnssleep 300 --server https://acme-v02.api.letsencrypt.org/directory --debug 2>&1)
+              echo "$issue_output"
               if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
                 echo "Skipping certificate renewal for $domain as it's not yet due."
               elif echo "$issue_output" | grep -q 'success'; then
@@ -93,7 +94,6 @@ jobs:
             fi
           }
 
-          # 并行处理域名
           while IFS= read -r domain || [ -n "$domain" ]; do
             {
               echo "Processing domain: $domain"
@@ -102,11 +102,11 @@ jobs:
               issue_and_install_certificate "$domain" "RSA"
             } &
           done < cloudflare_domains_list.txt
-          wait  # 等待所有并行任务完成
+          wait
 
       - name: Validate new certificates
         run: |
-          set -x  # 打开命令追踪模式，捕获所有输出
+          set -x
           for cert in $(find ./ssl -name "*.cer"); do
             openssl x509 -in "$cert" -noout -text || { echo "Invalid certificate: $cert"; exit 1; }
           done
@@ -133,7 +133,7 @@ jobs:
           CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          set -x  # 打开命令追踪模式，捕获所有输出
+          set -x
           RCLONE_CONFIG=$(cat ~/.config/rclone/rclone.conf)
           echo "${CLI_TOKEN}" | gh auth login --with-token
           gh secret set RCLONE_CONFIG -b"${RCLONE_CONFIG}" --repo "${REPO}" || { echo "Failed to update RCLONE_CONFIG secret"; exit 1; }
