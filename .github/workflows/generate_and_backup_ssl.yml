@@ -19,10 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     name: Generate and Backup SSL Certificates
     steps:
-      - name: Ensure tar is available
-        run: |
-          which tar || apt-get update && apt-get install -y tar
-
       - name: Checkout master
         uses: actions/checkout@v4
 
