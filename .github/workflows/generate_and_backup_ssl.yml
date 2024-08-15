@@ -6,8 +6,10 @@ on:
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
+  CF_TOKEN: ${{ secrets.CF_TOKEN }}  # 添加 Cloudflare API Token
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}  # Cloudflare Account ID
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "/path/to/dropbox/folder"
+  DROPBOX_PATH: "/SSL"
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
@@ -24,7 +26,7 @@ jobs:
         with:
           path: |
             /usr/bin/rclone
-            /home/runner/.acme.sh
+            /home/runner/.acme.sh  # 使用绝对路径
           key: ${{ runner.os }}-rclone-acme
 
       - name: Install rclone and acme.sh
@@ -42,10 +44,13 @@ jobs:
 
       - name: Sync certificates from Dropbox
         run: |
-          rclone sync dropbox:SSL ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log || exit 1
+          rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log || exit 1
           echo "SSL Certificates synced from Dropbox."
 
       - name: Generate SSL Certificates if needed
+        env:
+          CF_Token: ${{ secrets.CF_TOKEN }}  # 确保这些变量在生成证书时可用
+          CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           check_certificate_validity() {
             cert_path=$1
@@ -92,13 +97,13 @@ jobs:
 
       - name: Backup certificates to Dropbox
         run: |
-          rclone sync ./ssl dropbox:SSL $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
+          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
           echo "SSL Certificates backup to Dropbox completed."
 
       - name: Backup domain list and rclone config
         run: |
-          rclone copy cloudflare_domains_list.txt dropbox:SSL $RCLONE_PARAMS --log-file=rclone_domainlist.log || exit 1
-          rclone copy ~/.config/rclone dropbox:SSL/rclone-config $RCLONE_PARAMS --log-file=rclone_config.log || exit 1
+          rclone copy cloudflare_domains_list.txt dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_domainlist.log || exit 1
+          rclone copy ~/.config/rclone dropbox:$DROPBOX_PATH/rclone-config $RCLONE_PARAMS --log-file=rclone_config.log || exit 1
           echo "Domain list and rclone config backup to Dropbox completed."
 
       - name: Cleanup local certificates
