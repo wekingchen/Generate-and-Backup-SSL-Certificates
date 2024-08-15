@@ -73,6 +73,10 @@ jobs:
               echo "Generating $cert_type certificate for $domain..."
               issue_output=$(timeout 300 $ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --dnssleep 120 --server https://acme-v02.api.letsencrypt.org/directory --debug 2>&1)
               echo "$issue_output"
+
+              # 增加等待时间，确保DNS记录传播
+              sleep 60
+
               if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
                 echo "Skipping certificate renewal for $domain as it's not yet due."
               elif echo "$issue_output" | grep -q 'success'; then
@@ -109,6 +113,7 @@ jobs:
               issue_and_install_certificate "$domain" "RSA"
             fi
           done < cloudflare_domains_list.txt
+
 
       - name: Validate new certificates
         run: |
