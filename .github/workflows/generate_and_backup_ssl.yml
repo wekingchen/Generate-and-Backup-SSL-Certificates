@@ -75,7 +75,7 @@ jobs:
             key_file="$cert_path/$domain.key"
             if ! check_certificate_validity "$cert_file"; then
               echo "Generating $cert_type certificate for $domain..."
-              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" 2>&1)
+              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --debug 2>&1)
               echo "$issue_output"
               if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
                 echo "Skipping certificate renewal for $domain as it's not yet due."
