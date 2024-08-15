@@ -1,0 +1,116 @@
+name: Generate and Backup SSL Certificates
+on:
+  schedule:
+    - cron: "35 23 * * *"
+  workflow_dispatch:
+
+env:
+  EMAIL: ${{ secrets.EMAIL }}
+  RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
+  DROPBOX_PATH: "/path/to/dropbox/folder"
+  DAYS_BEFORE_EXPIRY: 30
+
+jobs:
+  generate-and-backup:
+    runs-on: ubuntu-latest
+    name: Generate and Backup SSL Certificates
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+
+      - name: Cache rclone and acme.sh
+        uses: actions/cache@v3
+        with:
+          path: |
+            /usr/bin/rclone
+            ~/.acme.sh
+          key: ${{ runner.os }}-rclone-acme
+
+      - name: Install rclone and acme.sh
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          curl https://get.acme.sh | sh -s email=$EMAIL
+        
+      - name: Configure rclone
+        env:
+          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
+
+      - name: Sync certificates from Dropbox
+        run: |
+          rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log || exit 1
+          echo "SSL Certificates synced from Dropbox."
+
+      - name: Generate SSL Certificates if needed
+        run: |
+          check_certificate_validity() {
+            cert_path=$1
+            if [ -f "$cert_path" ]; then
+              if openssl x509 -checkend $(( DAYS_BEFORE_EXPIRY * 86400 )) -noout -in "$cert_path"; then
+                echo "Certificate at $cert_path is valid for more than $DAYS_BEFORE_EXPIRY days, skipping renewal..."
+                return 0
+              else
+                return 1
+              fi
+            else
+              return 1
+            fi
+          }
+
+          issue_and_install_certificate() {
+            domain=$1
+            cert_type=$2 # "EC" or "RSA"
+            cert_path="./ssl/$domain"
+            [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
+            cert_file="$cert_path/$domain.cer"
+            key_file="$cert_path/$domain.key"
+            if ! check_certificate_validity "$cert_file"; then
+              $ACME --issue --dns dns_cf -d "$domain" -d "*.$domain" || { echo "Failed to issue certificate for $domain"; exit 1; }
+              $ACME --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; exit 1; }
+              echo "Generated and installed $cert_type certificate for $domain"
+            else
+              echo "Existing $cert_type certificate for $domain is still valid, no need to generate a new one."
+            fi
+          }
+
+          while IFS= read -r domain || [ -n "$domain" ]; do
+            mkdir -p "./ssl/$domain/rsa"
+            issue_and_install_certificate "$domain" "EC"
+            issue_and_install_certificate "$domain" "RSA"
+          done < cloudflare_domains_list.txt
+
+      - name: Validate new certificates
+        run: |
+          for cert in $(find ./ssl -name "*.cer"); do
+            openssl x509 -in "$cert" -noout -text || { echo "Invalid certificate: $cert"; exit 1; }
+          done
+          echo "All certificates are valid."
+
+      - name: Backup certificates to Dropbox
+        run: |
+          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
+          echo "SSL Certificates backup to Dropbox completed."
+
+      - name: Backup domain list and rclone config
+        run: |
+          rclone copy cloudflare_domains_list.txt dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_domainlist.log || exit 1
+          rclone copy ~/.config/rclone dropbox:$DROPBOX_PATH/rclone-config $RCLONE_PARAMS --log-file=rclone_config.log || exit 1
+          echo "Domain list and rclone config backup to Dropbox completed."
+
+      - name: Cleanup local certificates
+        run: |
+          rm -rf ./ssl
+          echo "Local SSL certificates cleaned up."
+
+      - name: Update GitHub Secrets
+        env:
+          CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          RCLONE_CONFIG=$(cat ~/.config/rclone/rclone.conf)
+          echo "${CLI_TOKEN}" | gh auth login --with-token
+          gh secret set RCLONE_CONFIG -b"${RCLONE_CONFIG}" --repo "${REPO}" || { echo "Failed to update RCLONE_CONFIG secret"; exit 1; }
+          echo "Updated RCLONE_CONFIG secret."
