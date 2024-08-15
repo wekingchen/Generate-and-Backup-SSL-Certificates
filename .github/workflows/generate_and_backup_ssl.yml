@@ -9,7 +9,7 @@ env:
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
   DROPBOX_PATH: "/path/to/dropbox/folder"
   DAYS_BEFORE_EXPIRY: 30
-  ACME_PATH: "~/.acme.sh/acme.sh"
+  ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
 jobs:
   generate-and-backup:
@@ -24,7 +24,7 @@ jobs:
         with:
           path: |
             /usr/bin/rclone
-            ~/.acme.sh
+            /home/runner/.acme.sh
           key: ${{ runner.os }}-rclone-acme
 
       - name: Install rclone and acme.sh
