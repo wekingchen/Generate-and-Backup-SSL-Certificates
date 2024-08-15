@@ -52,6 +52,8 @@ jobs:
           CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
+          set -x  # 打开命令追踪模式，捕获所有输出
+          
           check_certificate_validity() {
             cert_path=$1
             if [ -f "$cert_path" ]; then
@@ -75,8 +77,8 @@ jobs:
             key_file="$cert_path/$domain.key"
             if ! check_certificate_validity "$cert_file"; then
               echo "Generating $cert_type certificate for $domain..."
-              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --debug 2>&1)
-              echo "$issue_output"
+              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --dnssleep 60 --debug 2>&1)
+              echo "$issue_output"  # 手动输出 acme.sh 命令的结果
               if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
                 echo "Skipping certificate renewal for $domain as it's not yet due."
               elif echo "$issue_output" | grep -q 'success'; then
@@ -94,6 +96,7 @@ jobs:
           # 并行处理域名
           while IFS= read -r domain || [ -n "$domain" ]; do
             {
+              echo "Processing domain: $domain"
               mkdir -p "./ssl/$domain/rsa"
               issue_and_install_certificate "$domain" "EC"
               issue_and_install_certificate "$domain" "RSA"
@@ -103,6 +106,7 @@ jobs:
 
       - name: Validate new certificates
         run: |
+          set -x  # 打开命令追踪模式，捕获所有输出
           for cert in $(find ./ssl -name "*.cer"); do
             openssl x509 -in "$cert" -noout -text || { echo "Invalid certificate: $cert"; exit 1; }
           done
@@ -129,6 +133,7 @@ jobs:
           CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
+          set -x  # 打开命令追踪模式，捕获所有输出
           RCLONE_CONFIG=$(cat ~/.config/rclone/rclone.conf)
           echo "${CLI_TOKEN}" | gh auth login --with-token
           gh secret set RCLONE_CONFIG -b"${RCLONE_CONFIG}" --repo "${REPO}" || { echo "Failed to update RCLONE_CONFIG secret"; exit 1; }
