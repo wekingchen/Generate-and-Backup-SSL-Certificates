@@ -93,7 +93,7 @@ jobs:
           fi
 
       - name: Push updated CHECK_LIST.md to repository
-        uses: ad-m/github-push-action@v4
+        uses: ad-m/github-push-action@v1  # 使用 v1 版本
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
