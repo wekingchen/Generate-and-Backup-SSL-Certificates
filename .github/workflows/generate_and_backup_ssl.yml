@@ -12,18 +12,13 @@ env:
   DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "$HOME/.acme.sh/acme.sh"
-  PATH: $HOME/.local/bin:$PATH
+  PATH: $HOME/.local/bin:$PATH  # 添加用户 bin 目录到 PATH
 
 jobs:
   generate-and-backup:
     runs-on: ubuntu-latest
     name: Generate and Backup SSL Certificates
     steps:
-      - name: Install tar
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y tar
-
       - name: Checkout master
         uses: actions/checkout@v4
 
@@ -31,9 +26,9 @@ jobs:
         uses: actions/cache@v3
         with:
           path: |
-            $HOME/.local/bin/rclone
-            $HOME/.acme.sh
-          key: ${{ runner.os }}-rclone-acme-v2
+            $HOME/.local/bin/rclone  # 修改 rclone 缓存路径
+            $HOME/.acme.sh  # 修改 acme.sh 缓存路径
+          key: ${{ runner.os }}-rclone-acme-v2  # 使用新的缓存键，避免使用旧的缓存
 
       - name: Install rclone and acme.sh
         if: steps.cache.outputs.cache-hit != 'true'
@@ -58,12 +53,12 @@ jobs:
           CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
-          set -x
+          set -x  # 打开命令追踪模式，捕获所有输出
           
           check_certificate_validity() {
             cert_path=$1
-            if [ -f "$cert_path" ]; then
-              if openssl x509 -checkend $(( DAYS_BEFORE_EXPIRY * 86400 )) -noout -in "$cert_path"; then
+            if [ -f "$cert_path" ];then
+              if openssl x509 -checkend $(( DAYS_BEFORE_EXPIRY * 86400 )) -noout -in "$cert_path";then
                 echo "Certificate at $cert_path is valid for more than $DAYS_BEFORE_EXPIRY days, skipping renewal..."
                 return 0
               else
@@ -76,18 +71,18 @@ jobs:
 
           issue_and_install_certificate() {
             domain=$1
-            cert_type=$2
+            cert_type=$2 # "EC" or "RSA"
             cert_path="./ssl/$domain"
             [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
-            if ! check_certificate_validity "$cert_file"; then
+            if ! check_certificate_validity "$cert_file";then
               echo "Generating $cert_type certificate for $domain..."
-              issue_output=$(timeout 300 $ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --dnssleep 300 --server https://acme-v02.api.letsencrypt.org/directory --debug 2>&1)
-              echo "$issue_output"
-              if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
+              issue_output=$(timeout 300 $ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --dnssleep 120 --debug 2>&1)
+              echo "$issue_output"  # 手动输出 acme.sh 命令的结果
+              if echo "$issue_output" | grep -q 'Skipping. Next renewal time';then
                 echo "Skipping certificate renewal for $domain as it's not yet due."
-              elif echo "$issue_output" | grep -q 'success'; then
+              elif echo "$issue_output" | grep -q 'success';then
                 $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; return 1; }
                 echo "Generated and installed $cert_type certificate for $domain"
               else
@@ -99,7 +94,8 @@ jobs:
             fi
           }
 
-          while IFS= read -r domain || [ -n "$domain" ]; do
+          # 并行处理域名
+          while IFS= read -r domain || [ -n "$domain" ];do
             {
               echo "Processing domain: $domain"
               mkdir -p "./ssl/$domain/rsa"
@@ -107,12 +103,12 @@ jobs:
               issue_and_install_certificate "$domain" "RSA"
             } &
           done < cloudflare_domains_list.txt
-          wait
+          wait  # 等待所有并行任务完成
 
       - name: Validate new certificates
         run: |
-          set -x
-          for cert in $(find ./ssl -name "*.cer"); do
+          set -x  # 打开命令追踪模式，捕获所有输出
+          for cert in $(find ./ssl -name "*.cer");do
             openssl x509 -in "$cert" -noout -text || { echo "Invalid certificate: $cert"; exit 1; }
           done
           echo "All certificates are valid."
@@ -138,7 +134,7 @@ jobs:
           CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          set -x
+          set -x  # 打开命令追踪模式，捕获所有输出
           RCLONE_CONFIG=$(cat ~/.config/rclone/rclone.conf)
           echo "${CLI_TOKEN}" | gh auth login --with-token
           gh secret set RCLONE_CONFIG -b"${RCLONE_CONFIG}" --repo "${REPO}" || { echo "Failed to update RCLONE_CONFIG secret"; exit 1; }
