@@ -21,8 +21,10 @@ jobs:
       - name: Checkout master
         uses: actions/checkout@v4
 
-      - name: Install rclone and acme.sh
+      - name: Install dependencies (rclone, acme.sh, socat)
         run: |
+          sudo apt-get update
+          sudo apt-get install -y socat
           curl https://rclone.org/install.sh | sudo bash
           curl https://get.acme.sh | sh -s email=$EMAIL
         
