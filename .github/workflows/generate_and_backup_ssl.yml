@@ -68,34 +68,23 @@ jobs:
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
             if ! check_certificate_validity "$cert_file"; then
-              # Capture the output of acme.sh command
-              issue_output=$($ACME --issue --dns dns_cf -d "$domain" -d "*.$domain" 2>&1)
-              if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
-                echo "Skipping certificate renewal for $domain as it's not yet due."
-              else
-                echo "$issue_output"
-                if echo "$issue_output" | grep -q 'success'; then
-                  $ACME --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; exit 1; }
-                  echo "Generated and installed $cert_type certificate for $domain"
-                else
-                  echo "Failed to issue certificate for $domain"
-                  exit 1
-                fi
-              fi
+              echo "Generating $cert_type certificate for $domain..."
+              $ACME --issue --dns dns_cf -d "$domain" -d "*.$domain" || { echo "Failed to issue certificate for $domain"; return 1; }
+              $ACME --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; return 1; }
+              echo "Generated and installed $cert_type certificate for $domain"
             else
-              echo "Existing $cert_type certificate for $domain is still valid, no need to generate a new one."
+              echo "Existing $cert_type certificate for $domain is still valid, skipping renewal."
             fi
           }
 
-          # 并行处理域名
+          # 循环检查 cloudflare_domains_list.txt 中的域名
           while IFS= read -r domain || [ -n "$domain" ]; do
-            {
-              mkdir -p "./ssl/$domain/rsa"
-              issue_and_install_certificate "$domain" "EC"
-              issue_and_install_certificate "$domain" "RSA"
-            } &
+            echo "Processing domain: $domain"
+            mkdir -p "./ssl/$domain/rsa"
+            # 为每个域名生成 EC 和 RSA 证书
+            issue_and_install_certificate "$domain" "EC"
+            issue_and_install_certificate "$domain" "RSA"
           done < cloudflare_domains_list.txt
-          wait  # 等待所有并行任务完成
 
       - name: Validate new certificates
         run: |
