@@ -61,11 +61,12 @@ jobs:
 
           issue_and_install_certificate() {
             domain=$1
-            cert_type=$2
+            cert_type=$2 # "EC" or "RSA"
             cert_path="./ssl/$domain"
             [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
+
             if ! check_certificate_validity "$cert_file"; then
               echo "Generating $cert_type certificate for $domain..."
               issue_output=$(timeout 300 $ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --dnssleep 120 --server https://acme-v02.api.letsencrypt.org/directory --debug 2>&1)
@@ -84,16 +85,28 @@ jobs:
             fi
           }
 
-          # 并行处理域名
+          # 处理不存在的证书
           while IFS= read -r domain || [ -n "$domain" ]; do
-            {
-              echo "Processing domain: $domain"
+            cert_path="./ssl/$domain/$domain.cer"
+            rsa_cert_path="./ssl/$domain/rsa/$domain.cer"
+            if [ ! -f "$cert_path" ] || [ ! -f "$rsa_cert_path" ]; then
+              echo "Processing domain without existing certificates: $domain"
               mkdir -p "./ssl/$domain/rsa"
               issue_and_install_certificate "$domain" "EC"
               issue_and_install_certificate "$domain" "RSA"
-            } &
+            fi
           done < cloudflare_domains_list.txt
-          wait
+
+          # 处理已有证书的更新
+          while IFS= read -r domain || [ -n "$domain" ]; do
+            cert_path="./ssl/$domain/$domain.cer"
+            rsa_cert_path="./ssl/$domain/rsa/$domain.cer"
+            if [ -f "$cert_path" ] && [ -f "$rsa_cert_path" ]; then
+              echo "Processing domain with existing certificates: $domain"
+              issue_and_install_certificate "$domain" "EC"
+              issue_and_install_certificate "$domain" "RSA"
+            fi
+          done < cloudflare_domains_list.txt
 
       - name: Validate new certificates
         run: |
