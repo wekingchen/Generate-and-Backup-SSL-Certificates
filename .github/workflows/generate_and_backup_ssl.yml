@@ -9,7 +9,7 @@ env:
   CF_TOKEN: ${{ secrets.CF_TOKEN }}  # 添加 Cloudflare API Token
   CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}  # Cloudflare Account ID
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "SSL"
+  DROPBOX_PATH: "SSL"  # 将 DROPBOX_PATH 设置为 "SSL"
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
@@ -74,12 +74,15 @@ jobs:
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
             if ! check_certificate_validity "$cert_file"; then
-              if $ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain"; then
-                $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; exit 1; }
-                echo "Generated and installed $cert_type certificate for $domain"
+              # Capture the output of acme.sh command
+              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" 2>&1)
+              if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
+                echo "Skipping certificate renewal for $domain as it's not yet due."
               else
-                if grep -q 'Skipping. Next renewal time' "$HOME/.acme.sh/${domain}_ecc/${domain}.log"; then
-                  echo "Skipping certificate renewal for $domain as it's not yet due."
+                echo "$issue_output"
+                if echo "$issue_output" | grep -q 'success'; then
+                  $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; exit 1; }
+                  echo "Generated and installed $cert_type certificate for $domain"
                 else
                   echo "Failed to issue certificate for $domain"
                   exit 1
