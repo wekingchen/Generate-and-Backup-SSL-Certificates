@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Cache acme.sh
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: /home/runner/.acme.sh  # 使用绝对路径，仅缓存 acme.sh 目录
           key: ${{ runner.os }}-acme
