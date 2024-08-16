@@ -21,13 +21,12 @@ jobs:
       - name: Checkout master
         uses: actions/checkout@v4
 
-      - name: Cache rclone and acme.sh
+      - name: Cache acme.sh
         uses: actions/cache@v3
         with:
-          path: |
-            /usr/bin/rclone
-            /home/runner/.acme.sh  # 使用绝对路径
-          key: ${{ runner.os }}-rclone-acme
+          path: /home/runner/.acme.sh  # 使用绝对路径，仅缓存 acme.sh 目录
+          key: ${{ runner.os }}-acme
+          enableCrossOsArchive: false
 
       - name: Install rclone and acme.sh
         if: steps.cache.outputs.cache-hit != 'true'
