@@ -106,12 +106,12 @@ jobs:
           while IFS= read -r domain || [ -n "$domain" ]; do
           mkdir -p "./ssl/$domain/rsa"
           # 生成EC证书
-          if issue_and_install_certificate "$domain" "EC"; then
+          if [ "$(issue_and_install_certificate "$domain" "EC")" = "true" ]; then
           any_certificate_updated=true
           updated_domains="$updated_domains $domain"  # 添加更新的域名
           fi
           # 独立生成RSA证书
-          if issue_and_install_certificate "$domain" "RSA"; then
+          if [ "$(issue_and_install_certificate "$domain" "RSA")" = "true" ]; then
           any_certificate_updated=true
           updated_domains="$updated_domains $domain"  # 添加更新的域名
           fi
