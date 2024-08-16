@@ -1,5 +1,10 @@
-## Certificate Status (Checked at 2024-08-16 02:03:10 UTC)
+## Certificate Status (Checked at 2024-08-16 06:58:16 UTC)
 | Domain | Expiry Date (EC) | Days Left (EC) | Expiry Date (RSA) | Days Left (RSA) |
 |--------|-------------------|----------------|--------------------|--------------------|
-| 502404.best | Nov 13 23:59:59 2024 GMT | 89 | Nov 13 23:59:59 2024 GMT | 89 |
-| w2m.free.hr | Nov 13 23:59:59 2024 GMT | 89 | Nov 13 23:59:59 2024 GMT | 89 |
+| 443502.xyz | Nov 14 23:59:59 2024 GMT | 90 | Not found | 0 |
+| free4me.pp.ua | Nov 14 23:59:59 2024 GMT | 90 | Not found | 0 |
+| fgw2world.buzz | Nov 14 23:59:59 2024 GMT | 90 | Not found | 0 |
+| gordon.run | Nov 14 23:59:59 2024 GMT | 90 | Not found | 0 |
+| sqqq.cf | Nov 14 23:59:59 2024 GMT | 90 | Not found | 0 |
+| myddns.plus | Nov 14 23:59:59 2024 GMT | 90 | Not found | 0 |
+| queena.win | Nov 14 23:59:59 2024 GMT | 90 | Not found | 0 |
