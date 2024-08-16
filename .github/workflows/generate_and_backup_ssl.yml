@@ -122,7 +122,13 @@ jobs:
           BARK_URL="${{ secrets.BARK_URL }}"
           NOTIFICATION_TITLE="SSL证书已更新"
           NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $updated_domains"
-          curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$NOTIFICATION_BODY"
+    
+          # 检查 BARK_URL 和 NOTIFICATION_BODY 是否有效
+          if [ -n "$BARK_URL" ] && [ -n "$NOTIFICATION_BODY" ]; then
+            curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$NOTIFICATION_BODY"
+            else
+            echo "No certificates were updated, skipping notification."
+            fi
           fi
 
       - name: Validate new certificates
