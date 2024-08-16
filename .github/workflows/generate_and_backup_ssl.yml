@@ -69,9 +69,9 @@ jobs:
             # 如果证书文件不存在或已过期，生成证书
             if ! check_certificate_validity "$cert_file"; then
                 echo "正在为 $domain 生成 $cert_type 证书..."
-                issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength 2048 2>&1)
+                issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
                 if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
-                    echo "跳过 $domain 的证书更新，因为尚未到期。"
+                    echo "跳过 $domain 的 $cert_type 证书更新，因为尚未到期。"
                 elif echo "$issue_output" | grep -q 'success'; then
                     $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "无法为 $domain 安装证书"; return 1; }
                     echo "已为 $domain 生成并安装 $cert_type 证书"
