@@ -66,9 +66,10 @@ jobs:
             key_file="$cert_path/$domain.key"
             certificate_updated=false  # 标记是否更新证书
 
+            # 如果证书文件不存在或已过期，生成证书
             if ! check_certificate_validity "$cert_file"; then
                 echo "正在为 $domain 生成 $cert_type 证书..."
-                issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" 2>&1)
+                issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength 2048 2>&1)
                 if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
                     echo "跳过 $domain 的证书更新，因为尚未到期。"
                 elif echo "$issue_output" | grep -q 'success'; then
@@ -94,31 +95,18 @@ jobs:
           any_certificate_updated=false
           updated_domains=""  # 用于存储有更新的域名
 
-          sync_certificates() {
-            domain=$1
-            cert_path="./ssl/$domain"
-            rsa_cert_path="./ssl/$domain/rsa"
-
-            if [ ! -d "$cert_path" ] || [ ! -d "$rsa_cert_path" ]; then
-                echo "$domain 的证书文件夹不存在，重新生成证书..."
-                issue_and_install_certificate "$domain" "EC"
-                issue_and_install_certificate "$domain" "RSA"
-                any_certificate_updated=true
-                updated_domains="$updated_domains $domain"
-            fi
-          }
-
-          # 检查并生成缺失的证书文件夹
+          # 分别生成EC和RSA证书
           while IFS= read -r domain || [ -n "$domain" ]; do
             mkdir -p "./ssl/$domain/rsa"
-            sync_certificates "$domain"
-            if issue_and_install_certificate "$domain" "EC"; then
+            # 生成EC证书
+            if [ "$(issue_and_install_certificate "$domain" "EC")" = "true" ]; then
               any_certificate_updated=true
-              updated_domains="$updated_domains $domain"
+              updated_domains="$updated_domains $domain"  # 添加更新的域名
             fi
-            if issue_and_install_certificate "$domain" "RSA"; then
+            # 独立生成RSA证书，即使存在EC证书也不跳过
+            if [ "$(issue_and_install_certificate "$domain" "RSA")" = "true" ]; then
               any_certificate_updated=true
-              updated_domains="$updated_domains $domain"
+              updated_domains="$updated_domains $domain"  # 添加更新的域名
             fi
           done < cloudflare_domains_list.txt || true
 
