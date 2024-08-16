@@ -78,7 +78,7 @@ jobs:
           if ! check_certificate_validity "$cert_file"; then
           echo "正在为 $domain 生成 $cert_type 证书..."
           # 使用 acme.sh 生成证书并捕获输出
-          issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --server https://acme-v02.api.letsencrypt.org/directory 2>&1)
+          issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" 2>&1)
         
           # 如果已经存在有效证书，则跳过生成
           if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
@@ -117,8 +117,8 @@ jobs:
           fi
           done < cloudflare_domains_list.txt || true
 
-          # 如果有任何证书更新，发送BARK通知
-          if [ "$any_certificate_updated" = true ]; then
+          # 如果有任何证书更新，且 updated_domains 不为空，发送BARK通知
+          if [ "$any_certificate_updated" = true ] && [ -n "$updated_domains" ]; then
           BARK_URL="${{ secrets.BARK_URL }}"
           NOTIFICATION_TITLE="SSL证书已更新"
           NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $updated_domains"
