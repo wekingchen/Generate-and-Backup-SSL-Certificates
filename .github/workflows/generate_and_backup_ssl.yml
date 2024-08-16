@@ -121,7 +121,9 @@ jobs:
           if [ "$any_certificate_updated" = true ] && [ -n "$updated_domains" ]; then
           BARK_URL="${{ secrets.BARK_URL }}"
           NOTIFICATION_TITLE="SSL证书已更新"
-          NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $updated_domains"
+          # 去重，确保同一个域名只显示一次
+          unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+          NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $unique_domains"
     
           # 检查 BARK_URL 和 NOTIFICATION_BODY 是否为空
           if [ -n "$BARK_URL" ] && [ -n "$NOTIFICATION_BODY" ]; then
