@@ -22,7 +22,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install rclone and acme.sh
-        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           curl https://rclone.org/install.sh | sudo bash
           curl https://get.acme.sh | sh -s email=$EMAIL
@@ -59,75 +58,81 @@ jobs:
           }
 
           issue_and_install_certificate() {
-          domain=$1
-          cert_type=$2  # "EC" 或 "RSA"
-          cert_path="./ssl/$domain"
-          [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
-          cert_file="$cert_path/$domain.cer"
-          key_file="$cert_path/$domain.key"
-          certificate_updated=false  # 标记是否更新证书
+            domain=$1
+            cert_type=$2  # "EC" 或 "RSA"
+            cert_path="./ssl/$domain"
+            [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
+            cert_file="$cert_path/$domain.cer"
+            key_file="$cert_path/$domain.key"
+            certificate_updated=false  # 标记是否更新证书
 
-          # 独立检查每个证书类型的有效性
-          if ! check_certificate_validity "$cert_file"; then
-          echo "正在为 $domain 生成 $cert_type 证书..."
-          # 使用 acme.sh 生成证书并捕获输出
-          issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" 2>&1)
-        
-          # 如果已经存在有效证书，则跳过生成
-          if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
-            echo "跳过 $domain 的证书更新，因为尚未到期。"
-          elif echo "$issue_output" | grep -q 'success'; then
-            $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "无法为 $domain 安装证书"; return 1; }
-            echo "已为 $domain 生成并安装 $cert_type 证书"
-            certificate_updated=true  # 标记证书已更新
-          else
-            echo "无法为 $domain 生成证书"
-            exit 1
-          fi
-          else
-          echo "$domain 的现有 $cert_type 证书仍然有效，无需生成新证书。"
-          fi
+            if ! check_certificate_validity "$cert_file"; then
+                echo "正在为 $domain 生成 $cert_type 证书..."
+                issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" 2>&1)
+                if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
+                    echo "跳过 $domain 的证书更新，因为尚未到期。"
+                elif echo "$issue_output" | grep -q 'success'; then
+                    $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "无法为 $domain 安装证书"; return 1; }
+                    echo "已为 $domain 生成并安装 $cert_type 证书"
+                    certificate_updated=true  # 标记证书已更新
+                else
+                    echo "无法为 $domain 生成证书"
+                    exit 1
+                fi
+            else
+                echo "$domain 的现有 $cert_type 证书仍然有效，无需生成新证书。"
+            fi
 
-          echo $certificate_updated  # 返回证书是否更新状态
+            echo $certificate_updated  # 返回证书是否更新状态
           }
 
           # 初始化更新标志和域名列表
           any_certificate_updated=false
           updated_domains=""  # 用于存储有更新的域名
 
-          # 分别生成EC和RSA证书
+          sync_certificates() {
+            domain=$1
+            cert_path="./ssl/$domain"
+            rsa_cert_path="./ssl/$domain/rsa"
+
+            if [ ! -d "$cert_path" ] || [ ! -d "$rsa_cert_path" ]; then
+                echo "$domain 的证书文件夹不存在，重新生成证书..."
+                issue_and_install_certificate "$domain" "EC"
+                issue_and_install_certificate "$domain" "RSA"
+                any_certificate_updated=true
+                updated_domains="$updated_domains $domain"
+            fi
+          }
+
+          # 检查并生成缺失的证书文件夹
           while IFS= read -r domain || [ -n "$domain" ]; do
-          mkdir -p "./ssl/$domain/rsa"
-          # 生成EC证书
-          if [ "$(issue_and_install_certificate "$domain" "EC")" = "true" ]; then
-          any_certificate_updated=true
-          updated_domains="$updated_domains $domain"  # 添加更新的域名
-          fi
-          # 独立生成RSA证书
-          if [ "$(issue_and_install_certificate "$domain" "RSA")" = "true" ]; then
-          any_certificate_updated=true
-          updated_domains="$updated_domains $domain"  # 添加更新的域名
-          fi
+            mkdir -p "./ssl/$domain/rsa"
+            sync_certificates "$domain"
+            if [ "$(issue_and_install_certificate "$domain" "EC")" = "true" ]; then
+              any_certificate_updated=true
+              updated_domains="$updated_domains $domain"
+            fi
+            if [ "$(issue_and_install_certificate "$domain" "RSA")" = "true" ]; then
+              any_certificate_updated=true
+              updated_domains="$updated_domains $domain"
+            fi
           done < cloudflare_domains_list.txt || true
 
           # 如果有任何证书更新，且 updated_domains 不为空，发送BARK通知
           if [ "$any_certificate_updated" = true ] && [ -n "$updated_domains" ]; then
-          BARK_URL="${{ secrets.BARK_URL }}"
-          NOTIFICATION_TITLE="SSL证书已更新"
-          # 去重，确保同一个域名只显示一次
-          unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-          NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $unique_domains"
+              BARK_URL="${{ secrets.BARK_URL }}"
+              NOTIFICATION_TITLE="SSL证书已更新"
+              unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+              NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $unique_domains"
     
-          # 检查 BARK_URL 和 NOTIFICATION_BODY 是否为空
-          if [ -n "$BARK_URL" ] && [ -n "$NOTIFICATION_BODY" ]; then
-          # 替换空格为URL编码的空格
-          ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g')
-          curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$ENCODED_BODY"
+              if [ -n "$BARK_URL" ] && [ -n "$NOTIFICATION_BODY" ]; then
+                  ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g')
+                  curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$ENCODED_BODY"
+              else
+                  echo "BARK_URL 或 NOTIFICATION_BODY 为空，跳过通知。"
+              fi
           else
-          echo "BARK_URL 或 NOTIFICATION_BODY 为空，跳过通知。"
-          fi
-          else
-          echo "没有证书更新，跳过通知。"
+              echo "没有证书更新，跳过通知。"
           fi
 
       - name: Validate new certificates
