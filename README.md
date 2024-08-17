@@ -202,7 +202,7 @@ jobs:
 name: Check SSL Certificate Expiry and Update Certificates
 on:
   schedule:
-    - cron: "0 1 * * *"  # 每天定时执行
+    - cron: "0 1 * * *"
   workflow_dispatch:
 
 env:
@@ -241,8 +241,6 @@ jobs:
 
       - name: Check certificate expiry and update CHECK_LIST.md
         run: |
-
-
           git config --global user.email $EMAIL
           git config --global user.name acme
 
@@ -267,6 +265,7 @@ jobs:
           trigger_renewal=false
           expiring_domains=""
 
+          # 并行处理域名
           while IFS= read -r domain || [ -n "$domain" ]; do
             {
               ec_result=$(check_certificate "./ssl/$domain/$domain.cer")
@@ -283,7 +282,7 @@ jobs:
               fi
             } &
           done < cloudflare_domains_list.txt
-          wait
+          wait  # 等待所有并行任务完成
 
           git add CHECK_LIST.md
           git commit -m "Update CHECK_LIST.md with certificate expiry dates and execution time at $CURRENT_TIME"
@@ -314,8 +313,9 @@ jobs:
                 renew_certificates "$domain" "RSA"
               } &
             done < cloudflare_domains_list.txt
-            wait
+            wait  # 等待所有并行任务完成
             
+            # 发送通知
             BARK_URL="${{ secrets.BARK_URL }}"
             NOTIFICATION_TITLE="SSL证书已更新"
             NOTIFICATION_BODY="以下域名的SSL证书已更新: $expiring_domains"
