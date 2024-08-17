@@ -34,15 +34,15 @@
 name: Generate and Backup SSL Certificates
 on:
   schedule:
-    - cron: "35 23 * * *"  # 每天定时执行
+    - cron: "35 23 * * *"
   workflow_dispatch:
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
-  CF_TOKEN: ${{ secrets.CF_TOKEN }}
-  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+  CF_TOKEN: ${{ secrets.CF_TOKEN }}  # 添加 Cloudflare API Token
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}  # Cloudflare Account ID
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "SSL"
+  DROPBOX_PATH: "SSL"  # 将 DROPBOX_PATH 设置为 "SSL"
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
@@ -51,14 +51,14 @@ jobs:
     runs-on: ubuntu-latest
     name: Generate and Backup SSL Certificates
     steps:
-      - name: Checkout code
+      - name: Checkout master
         uses: actions/checkout@v4
 
       - name: Install rclone and acme.sh
         run: |
           curl https://rclone.org/install.sh | sudo bash
           curl https://get.acme.sh | sh -s email=$EMAIL
-
+        
       - name: Configure rclone
         env:
           RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
@@ -73,7 +73,7 @@ jobs:
 
       - name: Generate SSL Certificates if needed
         env:
-          CF_Token: ${{ secrets.CF_TOKEN }}
+          CF_Token: ${{ secrets.CF_TOKEN }}  # 确保这些变量在生成证书时可用
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           check_certificate_validity() {
@@ -92,35 +92,73 @@ jobs:
 
           issue_and_install_certificate() {
             domain=$1
-            cert_type=$2
+            cert_type=$2  # "EC" 或 "RSA"
             cert_path="./ssl/$domain"
             [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
+            certificate_updated=false  # 标记是否更新证书
+
+            # 如果证书文件不存在或已过期，生成证书
             if ! check_certificate_validity "$cert_file"; then
-              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" 2>&1)
-              if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
-                echo "Skipping certificate renewal for $domain as it's not yet due."
-              else
-                echo "$issue_output"
-                if echo "$issue_output" | grep -q 'success'; then
-                  $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; exit 1; }
-                  echo "Generated and installed $cert_type certificate for $domain"
+                echo "正在为 $domain 生成 $cert_type 证书..."
+                issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
+                if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
+                    echo "跳过 $domain 的 $cert_type 证书更新，因为尚未到期。"
+                elif echo "$issue_output" | grep -q 'success'; then
+                    $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "无法为 $domain 安装证书"; return 1; }
+                    echo "已为 $domain 生成并安装 $cert_type 证书"
+                    certificate_updated=true  # 标记证书已更新
                 else
-                  echo "Failed to issue certificate for $domain"
-                  exit 1
+                    echo "无法为 $domain 生成证书"
+                    exit 1
                 fi
-              fi
             else
-              echo "Existing $cert_type certificate for $domain is still valid, no need to generate a new one."
+                echo "$domain 的现有 $cert_type 证书仍然有效，无需生成新证书。"
+            fi
+
+            if [ "$certificate_updated" = true ]; then
+                return 0  # 返回 0 表示证书更新
+            else
+                return 1  # 返回 1 表示证书未更新
             fi
           }
 
+          # 初始化更新标志和域名列表
+          any_certificate_updated=false
+          updated_domains=""  # 用于存储有更新的域名
+
+          # 分别生成EC和RSA证书
           while IFS= read -r domain || [ -n "$domain" ]; do
             mkdir -p "./ssl/$domain/rsa"
-            issue_and_install_certificate "$domain" "EC"
-            issue_and_install_certificate "$domain" "RSA"
+            # 生成EC证书
+            if issue_and_install_certificate "$domain" "EC"; then
+              any_certificate_updated=true
+              updated_domains="$updated_domains $domain"  # 添加更新的域名
+            fi
+            # 独立生成RSA证书，即使存在EC证书也不跳过
+            if issue_and_install_certificate "$domain" "RSA"; then
+              any_certificate_updated=true
+              updated_domains="$updated_domains $domain"  # 添加更新的域名
+            fi
           done < cloudflare_domains_list.txt || true
+
+          # 如果有任何证书更新，且 updated_domains 不为空，发送BARK通知
+          if [ "$any_certificate_updated" = true ] && [ -n "$updated_domains" ]; then
+              BARK_URL="${{ secrets.BARK_URL }}"
+              NOTIFICATION_TITLE="SSL证书已更新"
+              unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+              NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $unique_domains"
+    
+              if [ -n "$BARK_URL" ] && [ -n "$NOTIFICATION_BODY" ]; then
+                  ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g')
+                  curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$ENCODED_BODY"
+              else
+                  echo "BARK_URL 或 NOTIFICATION_BODY 为空，跳过通知。"
+              fi
+          else
+              echo "没有证书更新，跳过通知。"
+          fi
 
       - name: Validate new certificates
         run: |
