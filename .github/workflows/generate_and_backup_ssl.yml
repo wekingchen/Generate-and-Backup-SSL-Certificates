@@ -32,10 +32,13 @@ jobs:
         run: |
           mkdir -p ~/.config/rclone
           echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
-      - name: Sync certificates from Dropbox
+
+      - name: Sync certificates and domain list from Dropbox
         run: |
           rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log || exit 1
-          echo "SSL Certificates synced from Dropbox."
+          rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./ || exit 1
+          echo "SSL Certificates and domain list synced from Dropbox."
+
       - name: Generate SSL Certificates if needed
         env:
           CF_Token: ${{ secrets.CF_TOKEN }}  # 确保这些变量在生成证书时可用
@@ -54,6 +57,7 @@ jobs:
               return 1
             fi
           }
+
           issue_and_install_certificate() {
             domain=$1
             cert_type=$2  # "EC" 或 "RSA"
@@ -62,6 +66,7 @@ jobs:
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
             certificate_updated=false  # 标记是否更新证书
+
             # 如果证书文件不存在或已过期，生成证书
             if ! check_certificate_validity "$cert_file"; then
                 echo "正在为 $domain 生成 $cert_type 证书..."
@@ -79,15 +84,18 @@ jobs:
             else
                 echo "$domain 的现有 $cert_type 证书仍然有效，无需生成新证书。"
             fi
+
             if [ "$certificate_updated" = true ]; then
                 return 0  # 返回 0 表示证书更新
             else
                 return 1  # 返回 1 表示证书未更新
             fi
           }
+
           # 初始化更新标志和域名列表
           any_certificate_updated=false
           updated_domains=""  # 用于存储有更新的域名
+
           # 分别生成EC和RSA证书
           while IFS= read -r domain || [ -n "$domain" ]; do
             mkdir -p "./ssl/$domain/rsa"
@@ -102,6 +110,7 @@ jobs:
               updated_domains="$updated_domains $domain"  # 添加更新的域名
             fi
           done < cloudflare_domains_list.txt || true
+
           # 如果有任何证书更新，且 updated_domains 不为空，发送BARK通知
           if [ "$any_certificate_updated" = true ] && [ -n "$updated_domains" ]; then
               BARK_URL="${{ secrets.BARK_URL }}"
@@ -125,19 +134,22 @@ jobs:
             openssl x509 -in "$cert" -noout -text || { echo "Invalid certificate: $cert"; exit 1; }
           done
           echo "All certificates are valid."
+
       - name: Backup certificates to Dropbox
         run: |
           rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
           echo "SSL Certificates backup to Dropbox completed."
-      - name: Backup domain list and rclone config
+
+      - name: Backup rclone config
         run: |
-          rclone copy cloudflare_domains_list.txt dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_domainlist.log || exit 1
           rclone copy ~/.config/rclone dropbox:$DROPBOX_PATH/rclone-config $RCLONE_PARAMS --log-file=rclone_config.log || exit 1
-          echo "Domain list and rclone config backup to Dropbox completed."
-      - name: Cleanup local certificates
+          echo "rclone config backup to Dropbox completed."
+
+      - name: Cleanup local certificates and domain list
         run: |
-          rm -rf ./ssl
-          echo "Local SSL certificates cleaned up."
+          rm -rf ./ssl cloudflare_domains_list.txt
+          echo "Local SSL certificates and domain list cleaned up."
+
       - name: Update GitHub Secrets
         env:
           CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
