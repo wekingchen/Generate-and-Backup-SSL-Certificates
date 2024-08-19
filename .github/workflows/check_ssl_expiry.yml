@@ -65,24 +65,29 @@ jobs:
           trigger_renewal=false
           expiring_domains=""
 
-          # 并行处理域名
-          while IFS= read -r domain || [ -n "$domain" ]; do
-            {
-              ec_result=$(check_certificate "./ssl/$domain/$domain.cer")
-              rsa_result=$(check_certificate "./ssl/$domain/rsa/$domain.cer")
+          # 确保 cloudflare_domains_list.txt 文件存在且可读
+          if [ -f cloudflare_domains_list.txt ] && [ -r cloudflare_domains_list.txt ]; then
+            while IFS= read -r domain || [ -n "$domain" ]; do
+              {
+                ec_result=$(check_certificate "./ssl/$domain/$domain.cer")
+                rsa_result=$(check_certificate "./ssl/$domain/rsa/$domain.cer")
               
-              IFS='|' read -r ec_expiry ec_days <<< "$ec_result"
-              IFS='|' read -r rsa_expiry rsa_days <<< "$rsa_result"
+                IFS='|' read -r ec_expiry ec_days <<< "$ec_result"
+                IFS='|' read -r rsa_expiry rsa_days <<< "$rsa_result"
 
-              echo "| $domain | $ec_expiry | $ec_days | $rsa_expiry | $rsa_days |" >> CHECK_LIST.md
+                echo "| $domain | $ec_expiry | $ec_days | $rsa_expiry | $rsa_days |" >> CHECK_LIST.md
 
-              if [ "$ec_days" -lt "$DAYS_BEFORE_EXPIRY" ] || [ "$rsa_days" -lt "$DAYS_BEFORE_EXPIRY" ]; then
-                trigger_renewal=true
-                expiring_domains="$expiring_domains $domain"
-              fi
-            } &
-          done < cloudflare_domains_list.txt
-          wait  # 等待所有并行任务完成
+                if [ "$ec_days" -lt "$DAYS_BEFORE_EXPIRY" ] || [ "$rsa_days" -lt "$DAYS_BEFORE_EXPIRY" ]; then
+                  trigger_renewal=true
+                  expiring_domains="$expiring_domains $domain"
+                fi
+              } &
+            done < cloudflare_domains_list.txt
+            wait  # 等待所有并行任务完成
+          else
+            echo "cloudflare_domains_list.txt 文件不存在或不可读"
+            exit 1
+          fi
 
           git add CHECK_LIST.md
           git commit -m "Update CHECK_LIST.md with certificate expiry dates and execution time at $CURRENT_TIME"
