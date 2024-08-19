@@ -25,31 +25,20 @@ jobs:
         run: |
           curl https://rclone.org/install.sh | sudo bash
           curl https://get.acme.sh | sh -s email=$EMAIL
-
       - name: Configure rclone
         env:
           RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
         run: |
           mkdir -p ~/.config/rclone
           echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
-
-      - name: Sync certificates and domain list from Dropbox
+      - name: Sync certificates from Dropbox
         run: |
-          # 从 Dropbox 同步 SSL 证书和 cloudflare_domains_list.txt 文件
           rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log || exit 1
-          rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./cloudflare_domains_list.txt $RCLONE_PARAMS --log-file=rclone_domainlist_sync.log || exit 1
-          if [ -f ./cloudflare_domains_list.txt ]; then
-            echo "SSL Certificates and domain list synced from Dropbox."
-          else
-            echo "cloudflare_domains_list.txt 文件不存在或同步失败"
-            exit 1
-          fi
-
+          echo "SSL Certificates synced from Dropbox."
       - name: Check certificate expiry and update CHECK_LIST.md
         run: |
-          git config --global user.email "$EMAIL"
+          git config --global user.email $EMAIL
           git config --global user.name acme
-
           check_certificate() {
             cert_file=$1
             if [ -f "$cert_file" ]; then
@@ -62,45 +51,32 @@ jobs:
               echo "Not found|0"
             fi
           }
-
           CURRENT_TIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           echo "## Certificate Status (Checked at $CURRENT_TIME)" > CHECK_LIST.md
           echo "| Domain | Expiry Date (EC) | Days Left (EC) | Expiry Date (RSA) | Days Left (RSA) |" >> CHECK_LIST.md
           echo "|--------|-------------------|----------------|--------------------|--------------------|" >> CHECK_LIST.md
-
           trigger_renewal=false
           expiring_domains=""
-
-          # 确保 cloudflare_domains_list.txt 文件存在且可读
-          if [ -f cloudflare_domains_list.txt ] && [ -r cloudflare_domains_list.txt ]; then
-            while IFS= read -r domain || [ -n "$domain" ]; do
-              {
-                ec_result=$(check_certificate "./ssl/$domain/$domain.cer")
-                rsa_result=$(check_certificate "./ssl/$domain/rsa/$domain.cer")
+          # 并行处理域名
+          while IFS= read -r domain || [ -n "$domain" ]; do
+            {
+              ec_result=$(check_certificate "./ssl/$domain/$domain.cer")
+              rsa_result=$(check_certificate "./ssl/$domain/rsa/$domain.cer")
               
-                IFS='|' read -r ec_expiry ec_days <<< "$ec_result"
-                IFS='|' read -r rsa_expiry rsa_days <<< "$rsa_result"
-
-                echo "| $domain | $ec_expiry | $ec_days | $rsa_expiry | $rsa_days |" >> CHECK_LIST.md
-
-                if [ "$ec_days" -lt "$DAYS_BEFORE_EXPIRY" ] || [ "$rsa_days" -lt "$DAYS_BEFORE_EXPIRY" ]; then
-                  trigger_renewal=true
-                  expiring_domains="$expiring_domains $domain"
-                fi
-              } &
-            done < cloudflare_domains_list.txt
-            wait  # 等待所有并行任务完成
-          else
-            echo "cloudflare_domains_list.txt 文件不存在或不可读"
-            exit 1
-          fi
-
+              IFS='|' read -r ec_expiry ec_days <<< "$ec_result"
+              IFS='|' read -r rsa_expiry rsa_days <<< "$rsa_result"
+              echo "| $domain | $ec_expiry | $ec_days | $rsa_expiry | $rsa_days |" >> CHECK_LIST.md
+              if [ "$ec_days" -lt "$DAYS_BEFORE_EXPIRY" ] || [ "$rsa_days" -lt "$DAYS_BEFORE_EXPIRY" ]; then
+                trigger_renewal=true
+                expiring_domains="$expiring_domains $domain"
+              fi
+            } &
+          done < cloudflare_domains_list.txt
+          wait  # 等待所有并行任务完成
           git add CHECK_LIST.md
           git commit -m "Update CHECK_LIST.md with certificate expiry dates and execution time at $CURRENT_TIME"
-
           if [ "$trigger_renewal" = true ]; then
             echo "Certificates are expiring soon, renewing certificates..."
-
             renew_certificates() {
               domain=$1
               cert_type=$2
@@ -108,7 +84,6 @@ jobs:
               [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
               cert_file="$cert_path/$domain.cer"
               key_file="$cert_path/$domain.key"
-
               if ! openssl x509 -checkend $((DAYS_BEFORE_EXPIRY * 86400)) -noout -in "$cert_file"; then
                 $ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" || { echo "Failed to issue certificate for $domain"; return 1; }
                 $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; return 1; }
@@ -117,7 +92,6 @@ jobs:
                 echo "Existing $cert_type certificate for $domain is still valid, no need to renew."
               fi
             }
-
             while IFS= read -r domain || [ -n "$domain" ]; do
               {
                 renew_certificates "$domain" "EC"
@@ -132,7 +106,6 @@ jobs:
             NOTIFICATION_BODY="以下域名的SSL证书已更新: $expiring_domains"
             curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$NOTIFICATION_BODY"
           fi
-
       - name: Push updated CHECK_LIST.md to repository
         uses: ad-m/github-push-action@master
         with:
@@ -142,8 +115,7 @@ jobs:
         run: |
           rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
           echo "SSL Certificates backup to Dropbox completed."
-
-      - name: Cleanup local certificates and domain list
+      - name: Clean up local certificates
         run: |
-          rm -rf ./ssl cloudflare_domains_list.txt
-          echo "Local SSL certificates and domain list cleaned up."
+          rm -rf ./ssl
+          echo "Local SSL certificates cleaned up."
