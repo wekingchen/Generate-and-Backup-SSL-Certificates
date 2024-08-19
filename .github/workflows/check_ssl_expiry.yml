@@ -41,7 +41,7 @@ jobs:
 
       - name: Check certificate expiry and update CHECK_LIST.md
         run: |
-          git config --global user.email $EMAIL
+          git config --global user.email "$EMAIL"
           git config --global user.name acme
 
           check_certificate() {
