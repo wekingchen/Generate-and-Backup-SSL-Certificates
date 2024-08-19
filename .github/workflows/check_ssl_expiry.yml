@@ -33,10 +33,11 @@ jobs:
           mkdir -p ~/.config/rclone
           echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
 
-      - name: Sync certificates from Dropbox
+      - name: Sync certificates and domain list from Dropbox
         run: |
           rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log || exit 1
-          echo "SSL Certificates synced from Dropbox."
+          rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./cloudflare_domains_list.txt $RCLONE_PARAMS --log-file=rclone_domainlist_sync.log || exit 1
+          echo "SSL Certificates and domain list synced from Dropbox."
 
       - name: Check certificate expiry and update CHECK_LIST.md
         run: |
@@ -131,7 +132,7 @@ jobs:
           rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
           echo "SSL Certificates backup to Dropbox completed."
 
-      - name: Clean up local certificates
+      - name: Cleanup local certificates and domain list
         run: |
-          rm -rf ./ssl
-          echo "Local SSL certificates cleaned up."
+          rm -rf ./ssl cloudflare_domains_list.txt
+          echo "Local SSL certificates and domain list cleaned up."
