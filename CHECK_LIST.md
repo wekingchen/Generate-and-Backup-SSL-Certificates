@@ -1,10 +1,10 @@
-## Certificate Status (Checked at 2024-10-08 02:18:39 UTC)
+## Certificate Status (Checked at 2024-10-09 02:14:55 UTC)
 | Domain | Expiry Date (EC) | Days Left (EC) | Expiry Date (RSA) | Days Left (RSA) |
 |--------|-------------------|----------------|--------------------|--------------------|
-| 443502.xyz | Nov 14 23:59:59 2024 GMT | 37 | Nov 14 06:09:19 2024 GMT | 37 |
-| free4me.pp.ua | Nov 14 23:59:59 2024 GMT | 37 | Nov 14 23:59:59 2024 GMT | 37 |
-| sqqq.cf | Nov 14 23:59:59 2024 GMT | 37 | Nov 14 06:12:51 2024 GMT | 37 |
-| queena.win | Nov 14 23:59:59 2024 GMT | 37 | Nov 14 23:59:59 2024 GMT | 37 |
-| gordon.run | Nov 14 23:59:59 2024 GMT | 37 | Nov 14 06:11:02 2024 GMT | 37 |
-| fgw2world.buzz | Nov 14 23:59:59 2024 GMT | 37 | Nov 14 06:09:53 2024 GMT | 37 |
-| myddns.plus | Nov 14 23:59:59 2024 GMT | 37 | Nov 14 06:11:40 2024 GMT | 37 |
+| fgw2world.buzz | Nov 14 23:59:59 2024 GMT | 36 | Nov 14 06:09:53 2024 GMT | 36 |
+| free4me.pp.ua | Nov 14 23:59:59 2024 GMT | 36 | Nov 14 23:59:59 2024 GMT | 36 |
+| sqqq.cf | Nov 14 23:59:59 2024 GMT | 36 | Nov 14 06:12:51 2024 GMT | 36 |
+| queena.win | Nov 14 23:59:59 2024 GMT | 36 | Nov 14 23:59:59 2024 GMT | 36 |
+| 443502.xyz | Nov 14 23:59:59 2024 GMT | 36 | Nov 14 06:09:19 2024 GMT | 36 |
+| gordon.run | Nov 14 23:59:59 2024 GMT | 36 | Nov 14 06:11:02 2024 GMT | 36 |
+| myddns.plus | Nov 14 23:59:59 2024 GMT | 36 | Nov 14 06:11:40 2024 GMT | 36 |
