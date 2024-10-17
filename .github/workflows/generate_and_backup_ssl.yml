@@ -74,9 +74,18 @@ jobs:
                 if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
                     echo "跳过 $domain 的 $cert_type 证书更新，因为尚未到期。"
                 elif echo "$issue_output" | grep -q 'success'; then
-                    $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "无法为 $domain 安装证书"; return 1; }
-                    echo "已为 $domain 生成并安装 $cert_type 证书"
-                    certificate_updated=true  # 标记证书已更新
+                    # 检查生成的证书和密钥是否存在
+                    if [ -f "$cert_file" ] && [ -f "$key_file" ]; then
+                        echo "准备安装证书: $cert_file 和密钥: $key_file"
+                        $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "无法为 $domain 安装证书"; return 1; }
+                        echo "已为 $domain 生成并安装 $cert_type 证书"
+                        certificate_updated=true  # 标记证书已更新
+                    else
+                        echo "证书或密钥文件缺失，无法安装 $cert_type 证书。"
+                        echo "证书文件: $cert_file"
+                        echo "密钥文件: $key_file"
+                        return 1
+                    fi
                 else
                     echo "无法为 $domain 生成证书"
                     exit 1
@@ -86,9 +95,9 @@ jobs:
             fi
 
             if [ "$certificate_updated" = true ]; then
-                return 0  # 返回 0 表示证书更新
+              return 0  # 返回 0 表示证书更新
             else
-                return 1  # 返回 1 表示证书未更新
+              return 1  # 返回 1 表示证书未更新
             fi
           }
 
