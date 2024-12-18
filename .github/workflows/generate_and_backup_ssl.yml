@@ -146,8 +146,17 @@ jobs:
 
       - name: Backup certificates to Dropbox
         run: |
-          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
-          echo "SSL Certificates backup to Dropbox completed."
+          echo "开始备份 SSL 证书到 Dropbox..."
+          if [ -d "./ssl" ]; then
+            rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || { 
+              echo "备份失败，请检查日志：rclone_backup.log"; 
+              cat rclone_backup.log; 
+              exit 1; 
+            }
+            echo "SSL 证书备份到 Dropbox 完成。"
+          else
+            echo "本地目录 ./ssl 不存在或为空，跳过备份。"
+          fi
 
       - name: Backup rclone config
         run: |
