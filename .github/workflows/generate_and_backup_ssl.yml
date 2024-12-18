@@ -6,10 +6,10 @@ on:
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
-  CF_TOKEN: ${{ secrets.CF_TOKEN }}  # 添加 Cloudflare API Token
+  CF_TOKEN: ${{ secrets.CF_TOKEN }}  # Cloudflare API Token
   CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}  # Cloudflare Account ID
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "SSL"  # 将 DROPBOX_PATH 设置为 "SSL"
+  DROPBOX_PATH: "SSL"  # Dropbox path for SSL backups
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
@@ -41,7 +41,7 @@ jobs:
 
       - name: Generate SSL Certificates if needed
         env:
-          CF_Token: ${{ secrets.CF_TOKEN }}  # 确保这些变量在生成证书时可用
+          CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           check_certificate_validity() {
@@ -60,72 +60,75 @@ jobs:
 
           issue_and_install_certificate() {
             domain=$1
-            cert_type=$2  # "EC" 或 "RSA"
+            cert_type=$2
             cert_path="./ssl/$domain"
             [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
-            certificate_updated=false  # 标记是否更新证书
 
-            # 如果证书文件不存在或已过期，生成证书
+            # Ensure directory exists
+            mkdir -p "$cert_path"
+
+            certificate_updated=false
+
             if ! check_certificate_validity "$cert_file"; then
-                echo "正在为 $domain 生成 $cert_type 证书..."
-                issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
-                if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
-                    echo "跳过 $domain 的 $cert_type 证书更新，因为尚未到期。"
-                elif echo "$issue_output" | grep -q 'success'; then
-                    $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "无法为 $domain 安装证书"; return 1; }
-                    echo "已为 $domain 生成并安装 $cert_type 证书"
-                    certificate_updated=true  # 标记证书已更新
+              echo "正在为 $domain 生成 $cert_type 证书..."
+              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1 | tee issue_log.txt)
+              if echo "$issue_output" | grep -q 'success'; then
+                echo "证书生成成功，开始安装 $cert_type 证书..."
+                install_output=$($ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" 2>&1)
+                if [ -f "$cert_file" ] && [ -f "$key_file" ]; then
+                  echo "已为 $domain 生成并安装 $cert_type 证书"
+                  certificate_updated=true
                 else
-                    echo "无法为 $domain 生成证书"
-                    exit 1
+                  echo "证书或密钥文件缺失，无法安装 $cert_type 证书。"
+                  echo "证书文件: $cert_file"
+                  echo "密钥文件: $key_file"
                 fi
+              else
+                echo "无法为 $domain 生成 $cert_type 证书"
+                echo "$issue_output"
+              fi
             else
-                echo "$domain 的现有 $cert_type 证书仍然有效，无需生成新证书。"
+              echo "$domain 的现有 $cert_type 证书仍然有效，无需生成新证书。"
             fi
 
             if [ "$certificate_updated" = true ]; then
-                return 0  # 返回 0 表示证书更新
+              return 0
             else
-                return 1  # 返回 1 表示证书未更新
+              return 1
             fi
           }
 
-          # 初始化更新标志和域名列表
           any_certificate_updated=false
-          updated_domains=""  # 用于存储有更新的域名
+          updated_domains=""
 
-          # 分别生成EC和RSA证书
           while IFS= read -r domain || [ -n "$domain" ]; do
             mkdir -p "./ssl/$domain/rsa"
-            # 生成EC证书
             if issue_and_install_certificate "$domain" "EC"; then
               any_certificate_updated=true
-              updated_domains="$updated_domains $domain"  # 添加更新的域名
+              updated_domains="$updated_domains $domain"
             fi
-            # 独立生成RSA证书，即使存在EC证书也不跳过
             if issue_and_install_certificate "$domain" "RSA"; then
               any_certificate_updated=true
-              updated_domains="$updated_domains $domain"  # 添加更新的域名
+              updated_domains="$updated_domains $domain"
             fi
           done < cloudflare_domains_list.txt || true
 
-          # 如果有任何证书更新，且 updated_domains 不为空，发送BARK通知
           if [ "$any_certificate_updated" = true ] && [ -n "$updated_domains" ]; then
-              BARK_URL="${{ secrets.BARK_URL }}"
-              NOTIFICATION_TITLE="SSL证书已更新"
-              unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-              NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $unique_domains"
-    
-              if [ -n "$BARK_URL" ] && [ -n "$NOTIFICATION_BODY" ]; then
-                  ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g')
-                  curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$ENCODED_BODY"
-              else
-                  echo "BARK_URL 或 NOTIFICATION_BODY 为空，跳过通知。"
-              fi
+            BARK_URL="${{ secrets.BARK_URL }}"
+            NOTIFICATION_TITLE="SSL证书已更新"
+            unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+            NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $unique_domains"
+
+            if [ -n "$BARK_URL" ] && [ -n "$NOTIFICATION_BODY" ]; then
+              ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g')
+              curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$ENCODED_BODY"
+            else
+              echo "BARK_URL 或 NOTIFICATION_BODY 为空，跳过通知。"
+            fi
           else
-              echo "没有证书更新，跳过通知。"
+            echo "没有证书更新，跳过通知。"
           fi
 
       - name: Validate new certificates
@@ -137,18 +140,8 @@ jobs:
 
       - name: Backup certificates to Dropbox
         run: |
-          echo "开始备份 SSL 证书到 Dropbox..."
-          if [ -d "./ssl" ] && [ "$(ls -A ./ssl)" ]; then
-            echo "检测到证书文件，开始备份..."
-            rclone copy ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS -vv --log-file=rclone_backup.log || {
-              echo "备份失败，请检查日志：rclone_backup.log";
-              cat rclone_backup.log;
-              exit 1;
-            }
-            echo "SSL 证书备份到 Dropbox 完成。"
-          else
-            echo "没有生成任何证书，跳过备份。"
-          fi
+          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
+          echo "SSL Certificates backup to Dropbox completed."
 
       - name: Backup rclone config
         run: |
