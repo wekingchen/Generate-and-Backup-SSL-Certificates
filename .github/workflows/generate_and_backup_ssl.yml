@@ -48,7 +48,6 @@ jobs:
             cert_path=$1
             if [ -f "$cert_path" ]; then
               if openssl x509 -checkend $(( DAYS_BEFORE_EXPIRY * 86400 )) -noout -in "$cert_path"; then
-                echo "Certificate at $cert_path is valid for more than $DAYS_BEFORE_EXPIRY days, skipping renewal..."
                 return 0
               else
                 return 1
@@ -65,67 +64,60 @@ jobs:
             [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
-
-            # Ensure directory exists
-            mkdir -p "$cert_path"
-
             certificate_updated=false
 
             if ! check_certificate_validity "$cert_file"; then
               echo "正在为 $domain 生成 $cert_type 证书..."
-              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1 | tee issue_log.txt)
+              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
+
               if echo "$issue_output" | grep -q 'success'; then
-                echo "证书生成成功，开始安装 $cert_type 证书..."
-                install_output=$($ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" 2>&1)
-                if [ -f "$cert_file" ] && [ -f "$key_file" ]; then
-                  echo "已为 $domain 生成并安装 $cert_type 证书"
-                  certificate_updated=true
-                else
+                $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || {
                   echo "证书或密钥文件缺失，无法安装 $cert_type 证书。"
-                  echo "证书文件: $cert_file"
-                  echo "密钥文件: $key_file"
-                fi
+                  exit 1
+                }
+                certificate_updated=true
               else
                 echo "无法为 $domain 生成 $cert_type 证书"
-                echo "$issue_output"
+                exit 1
               fi
-            else
-              echo "$domain 的现有 $cert_type 证书仍然有效，无需生成新证书。"
             fi
 
-            if [ "$certificate_updated" = true ]; then
-              return 0
-            else
-              return 1
-            fi
+            echo $certificate_updated
           }
 
           any_certificate_updated=false
           updated_domains=""
+          update_details=""
 
           while IFS= read -r domain || [ -n "$domain" ]; do
             mkdir -p "./ssl/$domain/rsa"
-            if issue_and_install_certificate "$domain" "EC"; then
+
+            ec_updated=$(issue_and_install_certificate "$domain" "EC")
+            rsa_updated=$(issue_and_install_certificate "$domain" "RSA")
+
+            if [ "$ec_updated" = "true" ]; then
               any_certificate_updated=true
               updated_domains="$updated_domains $domain"
+              update_details="$update_details\n$domain: EC"
             fi
-            if issue_and_install_certificate "$domain" "RSA"; then
+            if [ "$rsa_updated" = "true" ]; then
               any_certificate_updated=true
               updated_domains="$updated_domains $domain"
+              update_details="$update_details\n$domain: RSA"
             fi
           done < cloudflare_domains_list.txt || true
 
-          if [ "$any_certificate_updated" = true ] && [ -n "$updated_domains" ]; then
+          if [ "$any_certificate_updated" = true ]; then
             BARK_URL="${{ secrets.BARK_URL }}"
             NOTIFICATION_TITLE="SSL证书已更新"
             unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-            NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $unique_domains"
+            NOTIFICATION_BODY="以下域名的SSL证书已更新:\n$update_details"
+            ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g; s/\n/%0A/g')
 
             if [ -n "$BARK_URL" ] && [ -n "$NOTIFICATION_BODY" ]; then
-              ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g')
               curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$ENCODED_BODY"
             else
-              echo "BARK_URL 或 NOTIFICATION_BODY 为空，跳过通知。"
+              echo "BARK通知的URL或内容为空，跳过通知。"
             fi
           else
             echo "没有证书更新，跳过通知。"
