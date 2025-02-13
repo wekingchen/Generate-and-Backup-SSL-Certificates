@@ -6,12 +6,13 @@ on:
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
-  CF_TOKEN: ${{ secrets.CF_TOKEN }}  # 添加 Cloudflare API Token
-  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}  # Cloudflare Account ID
+  CF_TOKEN: ${{ secrets.CF_TOKEN }}
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "SSL"  # 将 DROPBOX_PATH 设置为 "SSL"
+  DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
+  ACME_HOME: "/home/runner/.acme.sh"  # 新增环境变量
 
 jobs:
   generate-and-backup:
@@ -23,7 +24,7 @@ jobs:
 
       - name: Install rclone and acme.sh
         run: |
-          curl -O https://beta.rclone.org/branch/fix-8005-pikpak-login/v1.68.0-beta.8242.9c0c543ee.fix-8005-pikpak-login/rclone-v1.68.0-beta.8242.9c0c543ee.fix-8005-pikpak-login-linux-amd64.deb
+          curl -O https://beta.rclone.org/branch/fix-8005-pikpak-login/v1.68.0-beta.8242.9c0c543ee.fix-8005-pikpak-login-linux-amd64.deb
           sudo dpkg -i rclone-v1.68.0-beta.8242.9c0c543ee.fix-8005-pikpak-login-linux-amd64.deb
           curl https://get.acme.sh | sh -s email=$EMAIL
 
@@ -42,7 +43,7 @@ jobs:
 
       - name: Generate SSL Certificates if needed
         env:
-          CF_Token: ${{ secrets.CF_TOKEN }}  # 确保这些变量在生成证书时可用
+          CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           check_certificate_validity() {
@@ -70,28 +71,78 @@ jobs:
             fi
           }
 
+          # 新增文件同步函数
+          sync_with_retry() {
+            local src=$1
+            local dest=$2
+            local retries=3
+            local delay=5
+
+            for ((i=1; i<=retries; i++)); do
+              cp "$src" "$dest" && return 0
+              echo "Copy failed (attempt $i), retrying in $delay seconds..."
+              sleep $delay
+            done
+            echo "Failed to copy after $retries attempts"
+            return 1
+          }
+
           issue_and_install_certificate() {
             domain=$1
-            cert_type=$2  # "EC" 或 "RSA"
+            cert_type=$2
             cert_path="./ssl/$domain"
             [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
 
+            # 确保目标目录存在
+            mkdir -p "$cert_path" || { echo "无法创建目录: $cert_path"; exit 1; }
+
             certificate_updated=false
 
             if ! check_certificate_validity "$cert_file"; then
               echo "正在为 $domain 生成 $cert_type 证书..."
-              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
+              
+              # 生成证书命令添加调试参数
+              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" \
+                --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") \
+                --log $(mktemp) --force 2>&1)
+
               if echo "$issue_output" | grep -q 'success'; then
-                $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || {
-                  echo "证书或密钥文件缺失，无法安装 $cert_type 证书。"
-                  return 1
-                }
+                # 新增证书安装参数
+                $ACME_PATH --installcert -d "$domain" \
+                  --key-file "$key_file" \
+                  --fullchain-file "$cert_file" \
+                  --cert-home "$ACME_HOME" \
+                  --force || {
+                    echo "安装失败，调试信息："
+                    echo "acme.sh目录内容:"
+                    ls -l "$ACME_HOME/$domain/"
+                    echo "目标目录内容:"
+                    ls -l "$cert_path"
+                    exit 1
+                  }
+
+                # 新增文件验证
+                if [ ! -f "$cert_file" ]; then
+                  echo "手动复制证书文件..."
+                  sync_with_retry "$ACME_HOME/$domain/fullchain.cer" "$cert_file"
+                  sync_with_retry "$ACME_HOME/$domain/$domain.key" "$key_file"
+                fi
+
+                # 新增RSA证书验证
+                if [ "$cert_type" = "RSA" ]; then
+                  openssl rsa -in "$key_file" -check -noout || {
+                    echo "RSA密钥校验失败"
+                    exit 1
+                  }
+                fi
+
                 echo "已为 $domain 生成并安装 $cert_type 证书。"
                 certificate_updated=true
               else
-                echo "无法为 $domain 生成 $cert_type 证书。"
+                echo "无法为 $domain 生成 $cert_type 证书。错误信息："
+                echo "$issue_output"
                 exit 1
               fi
             else
