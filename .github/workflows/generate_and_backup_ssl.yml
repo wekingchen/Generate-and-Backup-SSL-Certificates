@@ -24,7 +24,6 @@ jobs:
 
       - name: Install rclone and acme.sh
         run: |
-          # 修复点1：强制使用Let's Encrypt并注册账户
           curl -fsSL https://rclone.org/install.sh | sudo bash
           curl -fsSL https://get.acme.sh | sh -s email=$EMAIL
           ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
@@ -64,116 +63,133 @@ jobs:
             fi
           }
 
-          prepare_cert_home() {
-            domain=$1
-            cert_type=$2
-            cert_home="$ACME_HOME/${domain}-${cert_type}"
-            mkdir -p "$cert_home"
-          }
-
           process_certificate() {
             domain=$1
             cert_type=$2
-            cert_path="./ssl/$domain/$cert_type"
-            fullchain_file="$cert_path/fullchain.cer"
-            privkey_file="$cert_path/privkey.key"
+            cert_dir="./ssl/$domain/$cert_type"
+            fullchain_file="$cert_dir/fullchain.cer"
+            privkey_file="$cert_dir/privkey.key"
 
-            mkdir -p "$cert_path"
-            prepare_cert_home "$domain" "$cert_type"
+            # 创建证书目录
+            mkdir -p "$cert_dir"
 
+            # 检查现有证书有效性
             if check_certificate_validity "$fullchain_file"; then
-              echo "Existing $cert_type certificate for $domain is still valid."
+              echo "Existing $cert_type certificate for $domain is valid"
               return 0
             fi
 
+            # 生成新证书
             key_length=$([ "$cert_type" = "rsa" ] && echo "2048" || echo "ec-256")
             echo "Generating $cert_type certificate for $domain..."
             
-            # 修复点2：指定Let's Encrypt CA
+            # 生成证书（修复点1：添加详细日志）
             $ACME_PATH --issue --dns dns_cf \
               -d "$domain" -d "*.$domain" \
               --keylength "$key_length" \
               --home "$ACME_HOME/${domain}-${cert_type}" \
-              --server https://acme-v02.api.letsencrypt.org/directory \
+              --server letsencrypt \
               --force \
-              --log-level 2 2>&1 | tee issue.log
+              --log-level 3 2>&1 | tee issue.log
 
-            if [ ! -f "$ACME_HOME/${domain}-${cert_type}/fullchain.cer" ]; then
-              echo "::error::Certificate generation failed! Check issue.log"
-              grep -E 'ERROR|WARN' issue.log
+            # 验证生成路径（修复点2：精确路径检查）
+            generated_cert_dir="$ACME_HOME/${domain}-${cert_type}/${domain}_${cert_type}"
+            if [ ! -f "$generated_cert_dir/fullchain.cer" ]; then
+              echo "::error::Certificate generation failed! Expected path:"
+              echo "$generated_cert_dir/fullchain.cer"
+              echo "Directory contents:"
+              ls -l "$ACME_HOME/${domain}-${cert_type}"
               exit 1
             fi
 
+            # 安装证书（修复点3：使用绝对路径）
             $ACME_PATH --installcert -d "$domain" \
               --home "$ACME_HOME/${domain}-${cert_type}" \
               --fullchain-file "$fullchain_file" \
-              --key-file "$privkey_file"
+              --key-file "$privkey_file" \
+              --reloadcmd "echo Certificates installed to $cert_dir"
 
+            # 最终验证（修复点4：双重检查）
             if [ ! -s "$fullchain_file" ] || [ ! -s "$privkey_file" ]; then
-              echo "::error::Certificate files are empty!"
+              echo "::error::Certificate files verification failed"
+              echo "Disk usage:"
+              df -h .
+              echo "Directory contents:"
+              tree -L 3 ./ssl
               exit 1
             fi
+            
+            echo "✅ Successfully processed $cert_type certificate for $domain"
             return 0
           }
 
           any_updated=false
           updated_domains=""
           while IFS= read -r domain || [ -n "$domain" ]; do
-            echo "Processing domain: $domain"
+            domain=$(echo "$domain" | xargs)
+            [ -z "$domain" ] && continue
             
+            echo "::group::Processing domain: $domain"
+            
+            # 处理ECC证书
             if process_certificate "$domain" "ecc"; then
               any_updated=true
-              updated_domains="$updated_domains $domain (ECC)"
+              updated_domains="$updated_domains • $domain (ECC)"
             fi
             
+            # 处理RSA证书
             if process_certificate "$domain" "rsa"; then
               any_updated=true
-              updated_domains="$updated_domains $domain (RSA)"
+              updated_domains="$updated_domains • $domain (RSA)"
             fi
+            
+            echo "::endgroup::"
           done < cloudflare_domains_list.txt
 
+          # 发送通知
           if [ "$any_updated" = true ]; then
             BARK_URL="${{ secrets.BARK_URL }}"
             if [ -n "$BARK_URL" ]; then
-              ENCODED_BODY=$(echo "Updated domains:$updated_domains" | sed 's/ /%20/g; s/\n/%0A/g')
-              curl -X POST "$BARK_URL/SSL%20Certificate%20Update/$ENCODED_BODY"
+              message="Updated domains:$updated_domains"
+              encoded_msg=$(echo "$message" | sed 's/ /%20/g; s/•/%E2%80%A2/g')
+              curl -fsS "$BARK_URL/SSL%20Updated/$encoded_msg"
             fi
           fi
 
       - name: Validate new certificates
         run: |
-          for cert in $(find ./ssl -name "fullchain.cer"); do
-            openssl x509 -in "$cert" -noout -text || {
-              echo "Invalid certificate: $cert"
-              exit 1
-            }
-          done
-          echo "All certificates are valid."
+          echo "::group::Certificate Validation"
+          find ./ssl -name "fullchain.cer" -print0 | xargs -0 -I{} sh -c '
+            echo "Checking {}..."
+            openssl x509 -in "{}" -noout -text || exit 1
+          '
+          echo "::endgroup::"
 
       - name: Backup certificates to Dropbox
         run: |
-          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
-          echo "SSL Certificates backup to Dropbox completed."
+          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS \
+            --log-level INFO \
+            --log-file=rclone_backup.log
+          echo "✅ Backup completed at $(date +'%Y-%m-%d %H:%M:%S')"
 
       - name: Backup rclone config
         run: |
-          rclone copy ~/.config/rclone dropbox:$DROPBOX_PATH/rclone-config $RCLONE_PARAMS --log-file=rclone_config.log || exit 1
-          echo "rclone config backup to Dropbox completed."
+          rclone copy ~/.config/rclone dropbox:$DROPBOX_PATH/rclone-config \
+            $RCLONE_PARAMS \
+            --log-file=rclone_config.log
+          echo "✅ Rclone config backup completed"
 
-      - name: Cleanup local certificates and domain list
+      - name: Cleanup local certificates
         run: |
           rm -rf ./ssl cloudflare_domains_list.txt
-          echo "Local SSL certificates and domain list cleaned up."
+          echo "🧹 Local files cleaned up"
 
       - name: Update GitHub Secrets
         env:
           CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
-          REPO: ${{ github.repository }}
         run: |
-          RCLONE_CONFIG=$(cat ~/.config/rclone/rclone.conf)
-          echo "${CLI_TOKEN}" | gh auth login --with-token
-          gh secret set RCLONE_CONFIG -b"${RCLONE_CONFIG}" --repo "${REPO}" || {
-            echo "Failed to update RCLONE_CONFIG secret"
-            exit 1
-          }
-          echo "Updated RCLONE_CONFIG secret."
+          echo "$CLI_TOKEN" | gh auth login --with-token
+          gh secret set RCLONE_CONFIG \
+            -b"$(cat ~/.config/rclone/rclone.conf)" \
+            --repo "${{ github.repository }}"
+          echo "🔑 Secrets updated at $(date +'%H:%M:%S')"
