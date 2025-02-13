@@ -6,13 +6,12 @@ on:
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
-  CF_TOKEN: ${{ secrets.CF_TOKEN }}
-  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+  CF_TOKEN: ${{ secrets.CF_TOKEN }}  # 添加 Cloudflare API Token
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}  # Cloudflare Account ID
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "SSL"
+  DROPBOX_PATH: "SSL"  # 将 DROPBOX_PATH 设置为 "SSL"
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
-  ACME_HOME: "/home/runner/.acme.sh"
 
 jobs:
   generate-and-backup:
@@ -24,10 +23,8 @@ jobs:
 
       - name: Install rclone and acme.sh
         run: |
-          curl -fsSL https://rclone.org/install.sh | sudo bash
-          curl -fsSL https://get.acme.sh | sh -s email=$EMAIL
-          ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-          ~/.acme.sh/acme.sh --register-account -m $EMAIL
+          curl https://rclone.org/install.sh | sudo bash
+          curl https://get.acme.sh | sh -s email=$EMAIL
 
       - name: Configure rclone
         env:
@@ -44,152 +41,128 @@ jobs:
 
       - name: Generate SSL Certificates if needed
         env:
-          CF_Token: ${{ secrets.CF_TOKEN }}
+          CF_Token: ${{ secrets.CF_TOKEN }}  # 确保这些变量在生成证书时可用
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           check_certificate_validity() {
             cert_path=$1
             if [ -f "$cert_path" ]; then
               expiry_date=$(openssl x509 -enddate -noout -in "$cert_path" | cut -d= -f2)
-              if ! expiry_timestamp=$(date -d "$expiry_date" +%s 2>/dev/null); then
-                echo "Error parsing date: $expiry_date"
+              expiry_timestamp=$(date -d "$expiry_date" +%s || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s)
+              current_timestamp=$(date +%s)
+              if [ "$expiry_timestamp" -gt "$current_timestamp" ]; then
+                remaining_days=$(( (expiry_timestamp - current_timestamp) / 86400 ))
+                if [ "$remaining_days" -gt "$DAYS_BEFORE_EXPIRY" ]; then
+                  echo "Certificate at $cert_path is valid for more than $DAYS_BEFORE_EXPIRY days."
+                  return 0
+                else
+                  echo "Certificate at $cert_path will expire within $DAYS_BEFORE_EXPIRY days."
+                  return 1
+                fi
+              else
+                echo "Certificate at $cert_path has already expired."
                 return 1
               fi
-              current_timestamp=$(date +%s)
-              remaining_days=$(( (expiry_timestamp - current_timestamp) / 86400 ))
-              [ "$remaining_days" -gt "$DAYS_BEFORE_EXPIRY" ]
             else
+              echo "Certificate file $cert_path does not exist."
               return 1
             fi
           }
 
-          process_certificate() {
+          issue_and_install_certificate() {
             domain=$1
-            cert_type=$2
-            cert_dir="./ssl/$domain/$cert_type"
-            fullchain_file="$cert_dir/fullchain.cer"
-            privkey_file="$cert_dir/privkey.key"
+            cert_type=$2  # "EC" 或 "RSA"
+            cert_path="./ssl/$domain"
+            [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
+            cert_file="$cert_path/$domain.cer"
+            key_file="$cert_path/$domain.key"
 
-            # 创建证书目录
-            mkdir -p "$cert_dir"
+            certificate_updated=false
 
-            # 检查现有证书有效性
-            if check_certificate_validity "$fullchain_file"; then
-              echo "Existing $cert_type certificate for $domain is valid"
-              return 0
+            if ! check_certificate_validity "$cert_file"; then
+              echo "正在为 $domain 生成 $cert_type 证书..."
+              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
+              if echo "$issue_output" | grep -q 'success'; then
+                $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || {
+                  echo "证书或密钥文件缺失，无法安装 $cert_type 证书。"
+                  return 1
+                }
+                echo "已为 $domain 生成并安装 $cert_type 证书。"
+                certificate_updated=true
+              else
+                echo "无法为 $domain 生成 $cert_type 证书。"
+                exit 1
+              fi
+            else
+              echo "$cert_path 的现有 $cert_type 证书仍然有效，无需更新。"
             fi
 
-            # 生成新证书
-            key_length=$([ "$cert_type" = "rsa" ] && echo "2048" || echo "ec-256")
-            echo "Generating $cert_type certificate for $domain..."
-            
-            # 生成证书（修复点1：添加详细日志）
-            $ACME_PATH --issue --dns dns_cf \
-              -d "$domain" -d "*.$domain" \
-              --keylength "$key_length" \
-              --home "$ACME_HOME/${domain}-${cert_type}" \
-              --server letsencrypt \
-              --force \
-              --log-level 3 2>&1 | tee issue.log
-
-            # 验证生成路径（修复点2：精确路径检查）
-            generated_cert_dir="$ACME_HOME/${domain}-${cert_type}/${domain}_${cert_type}"
-            if [ ! -f "$generated_cert_dir/fullchain.cer" ]; then
-              echo "::error::Certificate generation failed! Expected path:"
-              echo "$generated_cert_dir/fullchain.cer"
-              echo "Directory contents:"
-              ls -l "$ACME_HOME/${domain}-${cert_type}"
-              exit 1
-            fi
-
-            # 安装证书（修复点3：使用绝对路径）
-            $ACME_PATH --installcert -d "$domain" \
-              --home "$ACME_HOME/${domain}-${cert_type}" \
-              --fullchain-file "$fullchain_file" \
-              --key-file "$privkey_file" \
-              --reloadcmd "echo Certificates installed to $cert_dir"
-
-            # 最终验证（修复点4：双重检查）
-            if [ ! -s "$fullchain_file" ] || [ ! -s "$privkey_file" ]; then
-              echo "::error::Certificate files verification failed"
-              echo "Disk usage:"
-              df -h .
-              echo "Directory contents:"
-              tree -L 3 ./ssl
-              exit 1
-            fi
-            
-            echo "✅ Successfully processed $cert_type certificate for $domain"
-            return 0
+            $certificate_updated && return 0 || return 1
           }
 
-          any_updated=false
+          any_certificate_updated=false
           updated_domains=""
-          while IFS= read -r domain || [ -n "$domain" ]; do
-            domain=$(echo "$domain" | xargs)
-            [ -z "$domain" ] && continue
-            
-            echo "::group::Processing domain: $domain"
-            
-            # 处理ECC证书
-            if process_certificate "$domain" "ecc"; then
-              any_updated=true
-              updated_domains="$updated_domains • $domain (ECC)"
-            fi
-            
-            # 处理RSA证书
-            if process_certificate "$domain" "rsa"; then
-              any_updated=true
-              updated_domains="$updated_domains • $domain (RSA)"
-            fi
-            
-            echo "::endgroup::"
-          done < cloudflare_domains_list.txt
 
-          # 发送通知
-          if [ "$any_updated" = true ]; then
-            BARK_URL="${{ secrets.BARK_URL }}"
-            if [ -n "$BARK_URL" ]; then
-              message="Updated domains:$updated_domains"
-              encoded_msg=$(echo "$message" | sed 's/ /%20/g; s/•/%E2%80%A2/g')
-              curl -fsS "$BARK_URL/SSL%20Updated/$encoded_msg"
+          while IFS= read -r domain || [ -n "$domain" ]; do
+            mkdir -p "./ssl/$domain/rsa"
+            if issue_and_install_certificate "$domain" "EC"; then
+              any_certificate_updated=true
+              updated_domains="$updated_domains $domain"
             fi
+            if issue_and_install_certificate "$domain" "RSA"; then
+              any_certificate_updated=true
+              updated_domains="$updated_domains $domain"
+            fi
+          done < cloudflare_domains_list.txt || true
+
+          if [ "$any_certificate_updated" = true ] && [ -n "$updated_domains" ]; then
+            BARK_URL="${{ secrets.BARK_URL }}"
+            NOTIFICATION_TITLE="SSL证书已更新"
+            unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+            NOTIFICATION_BODY="以下域名的SSL证书已成功更新:\n$unique_domains"
+
+            if [ -n "$BARK_URL" ]; then
+              ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g; s/\n/%0A/g')
+              curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$ENCODED_BODY"
+            else
+              echo "BARK_URL 未设置，跳过通知。"
+            fi
+          else
+            echo "没有证书更新，跳过通知。"
           fi
 
       - name: Validate new certificates
         run: |
-          echo "::group::Certificate Validation"
-          find ./ssl -name "fullchain.cer" -print0 | xargs -0 -I{} sh -c '
-            echo "Checking {}..."
-            openssl x509 -in "{}" -noout -text || exit 1
-          '
-          echo "::endgroup::"
+          for cert in $(find ./ssl -name "*.cer"); do
+            openssl x509 -in "$cert" -noout -text || {
+              echo "Invalid certificate: $cert"; exit 1;
+            }
+          done
+          echo "All certificates are valid."
 
       - name: Backup certificates to Dropbox
         run: |
-          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS \
-            --log-level INFO \
-            --log-file=rclone_backup.log
-          echo "✅ Backup completed at $(date +'%Y-%m-%d %H:%M:%S')"
+          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
+          echo "SSL Certificates backup to Dropbox completed."
 
       - name: Backup rclone config
         run: |
-          rclone copy ~/.config/rclone dropbox:$DROPBOX_PATH/rclone-config \
-            $RCLONE_PARAMS \
-            --log-file=rclone_config.log
-          echo "✅ Rclone config backup completed"
+          rclone copy ~/.config/rclone dropbox:$DROPBOX_PATH/rclone-config $RCLONE_PARAMS --log-file=rclone_config.log || exit 1
+          echo "rclone config backup to Dropbox completed."
 
-      - name: Cleanup local certificates
+      - name: Cleanup local certificates and domain list
         run: |
           rm -rf ./ssl cloudflare_domains_list.txt
-          echo "🧹 Local files cleaned up"
+          echo "Local SSL certificates and domain list cleaned up."
 
       - name: Update GitHub Secrets
         env:
           CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          echo "$CLI_TOKEN" | gh auth login --with-token
-          gh secret set RCLONE_CONFIG \
-            -b"$(cat ~/.config/rclone/rclone.conf)" \
-            --repo "${{ github.repository }}"
-          echo "🔑 Secrets updated at $(date +'%H:%M:%S')"
+          RCLONE_CONFIG=$(cat ~/.config/rclone/rclone.conf)
+          echo "${CLI_TOKEN}" | gh auth login --with-token
+          gh secret set RCLONE_CONFIG -b"${RCLONE_CONFIG}" --repo "${REPO}" || {
+            echo "Failed to update RCLONE_CONFIG secret"; exit 1;
+          }
+          echo "Updated RCLONE_CONFIG secret."
