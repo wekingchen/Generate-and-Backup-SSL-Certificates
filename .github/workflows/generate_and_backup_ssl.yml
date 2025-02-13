@@ -24,8 +24,11 @@ jobs:
 
       - name: Install rclone and acme.sh
         run: |
-          curl https://rclone.org/install.sh | sudo bash
-          curl https://get.acme.sh | sh -s email=$EMAIL
+          # 修复点1：强制使用Let's Encrypt并注册账户
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          curl -fsSL https://get.acme.sh | sh -s email=$EMAIL
+          ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+          ~/.acme.sh/acme.sh --register-account -m $EMAIL
 
       - name: Configure rclone
         env:
@@ -50,18 +53,12 @@ jobs:
             if [ -f "$cert_path" ]; then
               expiry_date=$(openssl x509 -enddate -noout -in "$cert_path" | cut -d= -f2)
               if ! expiry_timestamp=$(date -d "$expiry_date" +%s 2>/dev/null); then
-                echo "Error parsing expiry date: $expiry_date"
+                echo "Error parsing date: $expiry_date"
                 return 1
               fi
               current_timestamp=$(date +%s)
               remaining_days=$(( (expiry_timestamp - current_timestamp) / 86400 ))
-              if [ "$remaining_days" -gt "$DAYS_BEFORE_EXPIRY" ]; then
-                echo "Certificate valid for $remaining_days days"
-                return 0
-              else
-                echo "Certificate expires in $remaining_days days"
-                return 1
-              fi
+              [ "$remaining_days" -gt "$DAYS_BEFORE_EXPIRY" ]
             else
               return 1
             fi
@@ -91,14 +88,17 @@ jobs:
 
             key_length=$([ "$cert_type" = "rsa" ] && echo "2048" || echo "ec-256")
             echo "Generating $cert_type certificate for $domain..."
+            
+            # 修复点2：指定Let's Encrypt CA
             $ACME_PATH --issue --dns dns_cf \
               -d "$domain" -d "*.$domain" \
               --keylength "$key_length" \
               --home "$ACME_HOME/${domain}-${cert_type}" \
+              --server https://acme-v02.api.letsencrypt.org/directory \
               --force \
               --log-level 2 2>&1 | tee issue.log
 
-            if [ ! -f "$ACME_HOME/${domain}-${cert_type}/${domain}.cer" ]; then
+            if [ ! -f "$ACME_HOME/${domain}-${cert_type}/fullchain.cer" ]; then
               echo "::error::Certificate generation failed! Check issue.log"
               grep -E 'ERROR|WARN' issue.log
               exit 1
@@ -110,8 +110,7 @@ jobs:
               --key-file "$privkey_file"
 
             if [ ! -s "$fullchain_file" ] || [ ! -s "$privkey_file" ]; then
-              echo "::error::Certificate files empty after installation"
-              ls -l "$cert_path"
+              echo "::error::Certificate files are empty!"
               exit 1
             fi
             return 0
