@@ -12,7 +12,7 @@ env:
   DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
-  ACME_HOME: "/home/runner/.acme.sh"  # 新增关键环境变量
+  ACME_HOME: "/home/runner/.acme.sh"
 
 jobs:
   generate-and-backup:
@@ -45,42 +45,35 @@ jobs:
           CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
-          # 证书有效性检查函数
           check_certificate_validity() {
             cert_path=$1
             if [ -f "$cert_path" ]; then
               expiry_date=$(openssl x509 -enddate -noout -in "$cert_path" | cut -d= -f2)
-              expiry_timestamp=$(date -d "$expiry_date" +%s || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s)
+              if ! expiry_timestamp=$(date -d "$expiry_date" +%s 2>/dev/null); then
+                echo "Error parsing expiry date: $expiry_date"
+                return 1
+              fi
               current_timestamp=$(date +%s)
-              if [ "$expiry_timestamp" -gt "$current_timestamp" ]; then
-                remaining_days=$(( (expiry_timestamp - current_timestamp) / 86400 ))
-                if [ "$remaining_days" -gt "$DAYS_BEFORE_EXPIRY" ]; then
-                  echo "Certificate at $cert_path is valid for more than $DAYS_BEFORE_EXPIRY days."
-                  return 0
-                else
-                  echo "Certificate at $cert_path will expire within $DAYS_BEFORE_EXPIRY days."
-                  return 1
-                fi
+              remaining_days=$(( (expiry_timestamp - current_timestamp) / 86400 ))
+              if [ "$remaining_days" -gt "$DAYS_BEFORE_EXPIRY" ]; then
+                echo "Certificate valid for $remaining_days days"
+                return 0
               else
-                echo "Certificate at $cert_path has already expired."
+                echo "Certificate expires in $remaining_days days"
                 return 1
               fi
             else
-              echo "Certificate file $cert_path does not exist."
               return 1
             fi
           }
 
-          # 修复1：证书类型隔离目录
           prepare_cert_home() {
             domain=$1
             cert_type=$2
             cert_home="$ACME_HOME/${domain}-${cert_type}"
             mkdir -p "$cert_home"
-            echo "Using isolated cert home: $cert_home" >&2
           }
 
-          # 修复2：标准化证书处理流程
           process_certificate() {
             domain=$1
             cert_type=$2
@@ -91,75 +84,60 @@ jobs:
             mkdir -p "$cert_path"
             prepare_cert_home "$domain" "$cert_type"
 
-            # 检查证书有效性
             if check_certificate_validity "$fullchain_file"; then
               echo "Existing $cert_type certificate for $domain is still valid."
               return 0
             fi
 
-            # 生成新证书
             key_length=$([ "$cert_type" = "rsa" ] && echo "2048" || echo "ec-256")
             echo "Generating $cert_type certificate for $domain..."
             $ACME_PATH --issue --dns dns_cf \
               -d "$domain" -d "*.$domain" \
               --keylength "$key_length" \
-              --cert-home "$ACME_HOME/${domain}-${cert_type}" \
+              --home "$ACME_HOME/${domain}-${cert_type}" \
               --force \
               --log-level 2 2>&1 | tee issue.log
 
-            # 验证证书生成
-            if [ ! -f "$ACME_HOME/${domain}-${cert_type}/fullchain.cer" ]; then
-              echo "Certificate generation failed! Error log:"
+            if [ ! -f "$ACME_HOME/${domain}-${cert_type}/${domain}.cer" ]; then
+              echo "::error::Certificate generation failed! Check issue.log"
               grep -E 'ERROR|WARN' issue.log
               exit 1
             fi
 
-            # 安装证书
             $ACME_PATH --installcert -d "$domain" \
-              --cert-home "$ACME_HOME/${domain}-${cert_type}" \
+              --home "$ACME_HOME/${domain}-${cert_type}" \
               --fullchain-file "$fullchain_file" \
               --key-file "$privkey_file"
 
-            # 强制同步文件系统
-            sync "$cert_path"
-            sleep 2  # 确保文件写入完成
-
-            # 验证文件完整性
             if [ ! -s "$fullchain_file" ] || [ ! -s "$privkey_file" ]; then
-              echo "Certificate files are empty!"
+              echo "::error::Certificate files empty after installation"
+              ls -l "$cert_path"
               exit 1
             fi
-
             return 0
           }
 
-          # 主处理逻辑
           any_updated=false
           updated_domains=""
           while IFS= read -r domain || [ -n "$domain" ]; do
             echo "Processing domain: $domain"
             
-            # 处理ECC证书
             if process_certificate "$domain" "ecc"; then
               any_updated=true
               updated_domains="$updated_domains $domain (ECC)"
             fi
             
-            # 处理RSA证书
             if process_certificate "$domain" "rsa"; then
               any_updated=true
               updated_domains="$updated_domains $domain (RSA)"
             fi
           done < cloudflare_domains_list.txt
 
-          # 发送通知
           if [ "$any_updated" = true ]; then
             BARK_URL="${{ secrets.BARK_URL }}"
             if [ -n "$BARK_URL" ]; then
               ENCODED_BODY=$(echo "Updated domains:$updated_domains" | sed 's/ /%20/g; s/\n/%0A/g')
               curl -X POST "$BARK_URL/SSL%20Certificate%20Update/$ENCODED_BODY"
-            else
-              echo "BARK_URL not set, skipping notification."
             fi
           fi
 
