@@ -24,8 +24,7 @@ jobs:
 
       - name: Install rclone and acme.sh
         run: |
-          curl -O https://beta.rclone.org/branch/fix-8005-pikpak-login/v1.68.0-beta.8242.9c0c543ee.fix-8005-pikpak-login-linux-amd64.deb
-          sudo dpkg -i rclone-v1.68.0-beta.8242.9c0c543ee.fix-8005-pikpak-login-linux-amd64.deb
+          curl https://rclone.org/install.sh | sudo bash
           curl https://get.acme.sh | sh -s email=$EMAIL
 
       - name: Configure rclone
