@@ -74,14 +74,15 @@ jobs:
             cert_type=$2  # "EC" or "RSA"
             cert_path="./ssl/$domain"
             [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
-            cert_file="$cert_path/$domain.cer"
-            key_file="$cert_path/$domain.key"
+            mkdir -p "$cert_path"
+
+            cert_file="$cert_path/fullchain.cer"
+            key_file="$cert_path/private.key"
             certificate_updated=false
 
             if ! check_certificate_validity "$cert_file"; then
               echo "正在为 $domain 生成 $cert_type 证书..."
 
-              # 判断是否需要强制签发
               force_flag=""
               if [ "$cert_type" = "RSA" ] && [ ! -d "$HOME/.acme.sh/$domain" ]; then
                 force_flag="--force"
@@ -90,14 +91,13 @@ jobs:
               fi
 
               issue_output=$($ACME_PATH --issue $force_flag --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
-              echo "$issue_output" > "./ssl/$domain/${cert_type}_issue.log"
+              echo "$issue_output" > "$cert_path/${cert_type}_issue.log"
 
-              mkdir -p "$cert_path"
               $ACME_PATH --installcert -d "$domain" \
                 --key-file "$key_file" \
                 --fullchain-file "$cert_file" \
-                --cert-file "$cert_path/$domain.cert" \
-                --ca-file "$cert_path/$domain.ca"
+                --cert-file "$cert_path/cert.pem" \
+                --ca-file "$cert_path/ca.pem"
 
               if [ ! -s "$cert_file" ] || [ ! -s "$key_file" ]; then
                 echo "证书或密钥文件缺失，无法安装 $cert_type 证书。"
@@ -144,7 +144,7 @@ jobs:
 
       - name: Validate new certificates
         run: |
-          for cert in $(find ./ssl -name "*.cer"); do
+          for cert in $(find ./ssl -name "fullchain.cer"); do
             openssl x509 -in "$cert" -noout -text || {
               echo "Invalid certificate: $cert"; exit 1;
             }
