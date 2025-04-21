@@ -81,12 +81,21 @@ jobs:
 
             if ! check_certificate_validity "$cert_file"; then
               echo "正在为 $domain 生成 $cert_type 证书..."
-              issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
+              # 若没有该类型的证书目录，添加 --force 参数强制签发
+              force_flag=""
+              if [ "$cert_type" = "RSA" ] && [ ! -d "$HOME/.acme.sh/$domain" ]; then
+                force_flag="--force"
+              elif [ "$cert_type" = "EC" ] && [ ! -d "$HOME/.acme.sh/${domain}_ecc" ]; then
+                force_flag="--force"
+              fi
+              issue_output=$($ACME_PATH --issue $force_flag --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
+
               if echo "$issue_output" | grep -q 'success'; then
-                $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || {
-                  echo "证书或密钥文件缺失，无法安装 $cert_type 证书。"
-                  return 1
-                }
+                $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file"
+                if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
+                echo "证书或密钥文件缺失，无法安装 $cert_type 证书。"
+                return 1
+                fi
                 echo "已为 $domain 生成并安装 $cert_type 证书。"
                 certificate_updated=true
               else
