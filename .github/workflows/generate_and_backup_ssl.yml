@@ -78,6 +78,7 @@ jobs:
 
             cert_file="$cert_path/fullchain.cer"
             key_file="$cert_path/private.key"
+            log_file="$cert_path/${cert_type}_issue.log"
             certificate_updated=false
 
             if ! check_certificate_validity "$cert_file"; then
@@ -91,7 +92,7 @@ jobs:
               fi
 
               issue_output=$($ACME_PATH --issue $force_flag --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
-              echo "$issue_output" > "$cert_path/${cert_type}_issue.log"
+              echo "$issue_output" > "$log_file"
 
               $ACME_PATH --installcert -d "$domain" \
                 --key-file "$key_file" \
