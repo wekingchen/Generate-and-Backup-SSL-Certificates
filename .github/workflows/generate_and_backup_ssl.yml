@@ -54,13 +54,12 @@ jobs:
 
           issue_and_install_certificate() {
             domain=$1; type=$2
-            # acme.sh 存储路径
             if [ "$type" = "EC" ]; then
               src="$HOME/.acme.sh/${domain}_ecc"
             else
               src="$HOME/.acme.sh/$domain"
             fi
-            dest="./ssl/$domain${type=RSA?/rsa:}"
+            dest="./ssl/$domain$([ "$type" = "RSA" ] && echo "/rsa" || echo "")"
             mkdir -p "$dest"
 
             certf="$dest/fullchain.cer"
@@ -78,12 +77,12 @@ jobs:
                 --keylength $([ "$type" = "RSA" ] && echo 2048 || echo ec-256) \
                 >"$logf" 2>&1
 
-              # 手工拷贝
+              # 只复制 fullchain 和 key；如有 ca.cer，则也复制
               cp "$src/fullchain.cer" "$certf" \
                 && cp "$src/${domain}.key" "$keyf" \
-                && cp "$src/cert.pem"   "$dest/cert.pem" \
-                && cp "$src/ca.cer"     "$dest/ca.pem" \
                 || { echo "拷贝失败，缺少源文件"; return 1; }
+
+              [ -f "$src/ca.cer" ] && cp "$src/ca.cer" "$dest/ca.cer" || :
 
               echo "已为 $domain 安装 $type 证书。"
               updated=1
@@ -91,27 +90,28 @@ jobs:
               echo "$domain 的$type证书仍然有效，跳过。"
             fi
 
-            [ $updated -eq 1 ]
+            return $updated
           }
 
           any=0; domains=""
-          while read -r d; do
+          while IFS= read -r d || [ -n "$d" ]; do
             issue_and_install_certificate "$d" EC && { any=1; domains="$domains $d"; }
             issue_and_install_certificate "$d" RSA && { any=1; domains="$domains $d"; }
           done < cloudflare_domains_list.txt
 
           if [ $any -eq 1 ]; then
-            uniq=$(echo $domains|tr ' ' '\n'|sort -u|tr '\n' ' ')
+            uniq=$(echo $domains | tr ' ' '\n' | sort -u | tr '\n' ' ')
             body="以下域名已更新证书：\n$uniq"
             url="${{ secrets.BARK_URL }}"
-            curl -X POST "$url/SSL%20Updated/$(echo $body|sed 's/ /%20/g;s/\\n/%0A/g')"
+            ENCODED=$(echo "$body" | sed 's/ /%20/g; s/\\n/%0A/g')
+            curl -X POST "$url/SSL%20Updated/$ENCODED"
           else
             echo "无证书更新。"
           fi
 
       - name: Validate new certificates
         run: |
-          find ssl -name fullchain.cer | xargs -n1 -I{} openssl x509 -in {} -noout -text
+          find ./ssl -name "fullchain.cer" -print0 | xargs -0 -n1 -I{} openssl x509 -in {} -noout -text
 
       - name: Backup certificates to Dropbox
         run: |
