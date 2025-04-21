@@ -46,7 +46,7 @@ jobs:
           check_certificate_validity() {
             cert=$1
             [ -f "$cert" ] || return 1
-            exp=$(openssl x509 -enddate -noout -in "$cert" | cut -d= -f2)
+            exp=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
             exp_ts=$(date -d "$exp" +%s)
             now_ts=$(date +%s)
             [ $(( (exp_ts - now_ts)/86400 )) -gt $DAYS_BEFORE_EXPIRY ]
@@ -54,49 +54,53 @@ jobs:
 
           issue_and_install_certificate() {
             domain=$1; type=$2
+
             if [ "$type" = "EC" ]; then
               src="$HOME/.acme.sh/${domain}_ecc"
             else
               src="$HOME/.acme.sh/$domain"
             fi
+
             dest="./ssl/$domain$([ "$type" = "RSA" ] && echo "/rsa" || echo "")"
             mkdir -p "$dest"
 
             certf="$dest/fullchain.cer"
             keyf="$dest/private.key"
             logf="$dest/${type}_issue.log"
-            updated=0
 
             if ! check_certificate_validity "$certf"; then
               echo "正在为 $domain 生成 $type 证书..."
-              force=""
-              [ "$type" = "RSA" -a ! -d "$HOME/.acme.sh/$domain" ] && force="--force"
-              [ "$type" = "EC"  -a ! -d "$HOME/.acme.sh/${domain}_ecc" ] && force="--force"
 
+              force=""
+              if [ "$type" = "RSA" -a ! -d "$HOME/.acme.sh/$domain" ]; then
+                force="--force"
+              elif [ "$type" = "EC" -a ! -d "$HOME/.acme.sh/${domain}_ecc" ]; then
+                force="--force"
+              fi
+
+              # 签发
               $ACME_PATH --issue $force --dns dns_cf -d "$domain" -d "*.$domain" \
                 --keylength $([ "$type" = "RSA" ] && echo 2048 || echo ec-256) \
                 >"$logf" 2>&1
 
-              # 只复制 fullchain 和 key；如有 ca.cer，则也复制
-              cp "$src/fullchain.cer" "$certf" \
-                && cp "$src/${domain}.key" "$keyf" \
-                || { echo "拷贝失败，缺少源文件"; return 1; }
-
-              [ -f "$src/ca.cer" ] && cp "$src/ca.cer" "$dest/ca.cer" || :
-
-              echo "已为 $domain 安装 $type 证书。"
-              updated=1
+              # 如果源目录中有 fullchain 和 key，则复制；否则跳过 RSA/EC
+              if [ -f "$src/fullchain.cer" ] && [ -f "$src/${domain}.key" ]; then
+                cp "$src/fullchain.cer" "$certf"
+                cp "$src/${domain}.key" "$keyf"
+                [ -f "$src/ca.cer" ] && cp "$src/ca.cer" "$dest/ca.cer"
+                echo "已为 $domain 安装 $type 证书。"
+              else
+                echo "未在 $src 中找到 $type 证书，跳过安装。"
+              fi
             else
-              echo "$domain 的$type证书仍然有效，跳过。"
+              echo "$domain 的 $type 证书仍然有效，跳过。"
             fi
-
-            return $updated
           }
 
           any=0; domains=""
-          while IFS= read -r d || [ -n "$d" ]; do
-            issue_and_install_certificate "$d" EC && { any=1; domains="$domains $d"; }
-            issue_and_install_certificate "$d" RSA && { any=1; domains="$domains $d"; }
+          while IFS= read -r domain || [ -n "$domain" ]; do
+            issue_and_install_certificate "$domain" EC && any=1 && domains="$domains $domain"
+            issue_and_install_certificate "$domain" RSA && any=1 && domains="$domains $domain"
           done < cloudflare_domains_list.txt
 
           if [ $any -eq 1 ]; then
@@ -111,7 +115,8 @@ jobs:
 
       - name: Validate new certificates
         run: |
-          find ./ssl -name "fullchain.cer" -print0 | xargs -0 -n1 -I{} openssl x509 -in {} -noout -text
+          find ./ssl -name "fullchain.cer" -print0 \
+            | xargs -0 -n1 -I{} openssl x509 -in {} -noout -text
 
       - name: Backup certificates to Dropbox
         run: |
