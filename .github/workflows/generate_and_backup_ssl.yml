@@ -6,10 +6,10 @@ on:
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
-  CF_TOKEN: ${{ secrets.CF_TOKEN }}  # 添加 Cloudflare API Token
-  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}  # Cloudflare Account ID
+  CF_TOKEN: ${{ secrets.CF_TOKEN }}
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "SSL"  # 将 DROPBOX_PATH 设置为 "SSL"
+  DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
@@ -41,14 +41,14 @@ jobs:
 
       - name: Generate SSL Certificates if needed
         env:
-          CF_Token: ${{ secrets.CF_TOKEN }}  # 确保这些变量在生成证书时可用
+          CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           check_certificate_validity() {
             cert_path=$1
             if [ -f "$cert_path" ]; then
               expiry_date=$(openssl x509 -enddate -noout -in "$cert_path" | cut -d= -f2)
-              expiry_timestamp=$(date -d "$expiry_date" +%s || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s)
+              expiry_timestamp=$(date -d "$expiry_date" +%s)
               current_timestamp=$(date +%s)
               if [ "$expiry_timestamp" -gt "$current_timestamp" ]; then
                 remaining_days=$(( (expiry_timestamp - current_timestamp) / 86400 ))
@@ -71,47 +71,50 @@ jobs:
 
           issue_and_install_certificate() {
             domain=$1
-            cert_type=$2  # "EC" 或 "RSA"
+            cert_type=$2  # "EC" or "RSA"
             cert_path="./ssl/$domain"
             [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
             cert_file="$cert_path/$domain.cer"
             key_file="$cert_path/$domain.key"
-
             certificate_updated=false
 
             if ! check_certificate_validity "$cert_file"; then
               echo "正在为 $domain 生成 $cert_type 证书..."
-              # 若没有该类型的证书目录，添加 --force 参数强制签发
+
+              # 判断是否需要强制签发
               force_flag=""
               if [ "$cert_type" = "RSA" ] && [ ! -d "$HOME/.acme.sh/$domain" ]; then
                 force_flag="--force"
               elif [ "$cert_type" = "EC" ] && [ ! -d "$HOME/.acme.sh/${domain}_ecc" ]; then
                 force_flag="--force"
               fi
-              issue_output=$($ACME_PATH --issue $force_flag --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
 
-              if echo "$issue_output" | grep -q 'success'; then
-                $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file"
-                if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
+              issue_output=$($ACME_PATH --issue $force_flag --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
+              echo "$issue_output" > "./ssl/$domain/${cert_type}_issue.log"
+
+              mkdir -p "$cert_path"
+              $ACME_PATH --installcert -d "$domain" \
+                --key-file "$key_file" \
+                --fullchain-file "$cert_file" \
+                --cert-file "$cert_path/$domain.cert" \
+                --ca-file "$cert_path/$domain.ca"
+
+              if [ ! -s "$cert_file" ] || [ ! -s "$key_file" ]; then
                 echo "证书或密钥文件缺失，无法安装 $cert_type 证书。"
                 return 1
-                fi
-                echo "已为 $domain 生成并安装 $cert_type 证书。"
-                certificate_updated=true
-              else
-                echo "无法为 $domain 生成 $cert_type 证书。"
-                exit 1
               fi
+
+              echo "已为 $domain 生成并安装 $cert_type 证书。"
+              certificate_updated=true
             else
               echo "$cert_path 的现有 $cert_type 证书仍然有效，无需更新。"
             fi
 
-            $certificate_updated && return 0 || return 1
+            [ "$certificate_updated" = true ] && return 0 || return 1
           }
 
           any_certificate_updated=false
           updated_domains=""
-
           while IFS= read -r domain || [ -n "$domain" ]; do
             mkdir -p "./ssl/$domain/rsa"
             if issue_and_install_certificate "$domain" "EC"; then
@@ -129,7 +132,6 @@ jobs:
             NOTIFICATION_TITLE="SSL证书已更新"
             unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
             NOTIFICATION_BODY="以下域名的SSL证书已成功更新:\n$unique_domains"
-
             if [ -n "$BARK_URL" ]; then
               ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g; s/\n/%0A/g')
               curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$ENCODED_BODY"
