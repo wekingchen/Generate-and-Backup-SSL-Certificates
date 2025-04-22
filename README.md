@@ -1,34 +1,40 @@
 ---
-
 # 使用 GitHub Actions 自动生成、更新和备份 SSL 证书
 
 ## 前言
-在本教程中，我们将使用 GitHub Actions 自动化生成、更新和备份 SSL 证书。通过配置自动化工作流，你可以确保你的域名始终有有效的 SSL 证书，并且在证书即将到期时自动更新。我们还会介绍如何使用 Dropbox 来备份这些证书。
+
+本教程演示如何使用 GitHub Actions 自动化：
+
+- 定期生成（或续期）SSL 证书（ECC + RSA）
+- 在证书有效期低于阈值时自动更新
+- 将证书和配置备份到 Dropbox
+- 生成证书状态报表并在仓库中提交并推送
+- 触发 Bark 通知（可选）
+
+这样就能确保域名始终拥有有效证书，并且一旦证书快到期，就自动续签与备份。
 
 ## 前提条件
-1. 拥有一个 [GitHub](https://github.com/) 账号，并且创建了一个仓库。
-2. 配置了 [Cloudflare](https://www.cloudflare.com/) DNS 管理，并且拥有 Cloudflare API Token 和 Account ID。
-3. 安装了 [Dropbox](https://www.dropbox.com/) 并生成 API Token。
+
+1. 拥有 GitHub 账号，并创建了目标仓库。
+2. 在 Cloudflare 上管理域名，并获取 **API Token** (`CF_TOKEN`) 及 **Account ID** (`CF_ACCOUNT_ID`)。
+3. 在 Dropbox 上创建 App，并生成 **API Token**，用于 `rclone`。
+4. (可选) 已在设备或手机上安装并配置 Bark，用于接收推送通知。
 
 ## 步骤一：配置 GitHub 仓库
 
-### 1. 创建 GitHub 仓库
-在 GitHub 上创建一个新的仓库。你可以选择创建一个私有仓库，以确保你的配置和数据安全。
+1. 创建仓库或在现有仓库中操作。建议使用私有仓库以保护配置。
+2. 在仓库 **Settings → Secrets and variables → Actions** 中添加以下 Secrets：
+   - `EMAIL`：注册 acme.sh 时使用的邮箱。
+   - `CF_TOKEN`：Cloudflare API Token。
+   - `CF_ACCOUNT_ID`：Cloudflare 账户 ID。
+   - `RCLONE_CONFIG`：完整的 `rclone` 配置内容。
+   - `BARK_URL`：Bark 推送地址（可选）。
+   - `GITHUB_TOKEN`：GitHub 自动生成的推送令牌。
+   - `CLI_TOKEN`：用于 GH CLI 更新 `RCLONE_CONFIG`（可选）。
 
-### 2. 添加 Secrets
-在 GitHub 仓库中，点击 **Settings**，找到 **Secrets and variables** 下的 **Actions**，然后添加以下 Secrets：
-- `EMAIL`: 用于注册 acme.sh 的邮箱地址。
-- `CF_TOKEN`: Cloudflare API Token，用于 DNS 验证。
-- `CF_ACCOUNT_ID`: Cloudflare 账户 ID。
-- `RCLONE_CONFIG`: 用于配置 rclone 的配置文件内容。
-- `BARK_URL`: 用于发送通知的 Bark URL（可选）。
-- `GITHUB_TOKEN`: GitHub 提供的默认令牌，用于推送变更。
+## 步骤二：创建并优化工作流
 
-## 步骤二：创建 GitHub Actions 工作流
-
-### 1. 自动生成和备份 SSL 证书的工作流
-
-在你的仓库中，创建一个 `.github/workflows/generate_and_backup_ssl.yml` 文件，内容如下：
+### 1. 生成并备份 SSL 证书（`generate_and_backup_ssl.yml`）
 
 ```yaml
 name: Generate and Backup SSL Certificates
@@ -39,164 +45,120 @@ on:
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
-  CF_TOKEN: ${{ secrets.CF_TOKEN }}  # 添加 Cloudflare API Token
-  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}  # Cloudflare Account ID
+  CF_TOKEN: ${{ secrets.CF_TOKEN }}
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "SSL"  # 将 DROPBOX_PATH 设置为 "SSL"
+  DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
 jobs:
   generate-and-backup:
     runs-on: ubuntu-latest
-    name: Generate and Backup SSL Certificates
     steps:
-      - name: Checkout master
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install rclone and acme.sh
+      - name: 安装 rclone 与 acme.sh
         run: |
           curl https://rclone.org/install.sh | sudo bash
           curl https://get.acme.sh | sh -s email=$EMAIL
-        
-      - name: Configure rclone
+
+      - name: 配置 rclone
         env:
           RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
         run: |
           mkdir -p ~/.config/rclone
           echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
 
-      - name: Sync certificates from Dropbox
+      - name: 同步证书与域名列表
         run: |
-          rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log || exit 1
-          echo "SSL Certificates synced from Dropbox."
+          set -eo pipefail
+          rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log
+          rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./
 
-      - name: Generate SSL Certificates if needed
+      - name: 生成（或续期）SSL 证书
         env:
-          CF_Token: ${{ secrets.CF_TOKEN }}  # 确保这些变量在生成证书时可用
-          CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_TOKEN: ${{ secrets.CF_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
-          check_certificate_validity() {
-            cert_path=$1
-            if [ -f "$cert_path" ]; then
-              if openssl x509 -checkend $(( DAYS_BEFORE_EXPIRY * 86400 )) -noout -in "$cert_path"; then
-                echo "Certificate at $cert_path is valid for more than $DAYS_BEFORE_EXPIRY days, skipping renewal..."
-                return 0
-              else
-                return 1
-              fi
+          set -eo pipefail
+
+          # 检查证书有效期
+          check_validity() {
+            cert=$1; [ -f "$cert" ] || return 1
+            if openssl x509 -checkend $((DAYS_BEFORE_EXPIRY*86400)) -noout -in "$cert"; then
+              return 0
             else
               return 1
             fi
           }
 
-          issue_and_install_certificate() {
-            domain=$1
-            cert_type=$2  # "EC" 或 "RSA"
-            cert_path="./ssl/$domain"
-            [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
-            cert_file="$cert_path/$domain.cer"
-            key_file="$cert_path/$domain.key"
-            certificate_updated=false  # 标记是否更新证书
+          # 签发与安装函数
+          issue_install() {
+            domain=$1; type=$2; src="$HOME/.acme.sh/$domain$([ "$type" = "EC" ] && echo "_ecc")"
+            dest="./ssl/$domain$([ "$type" = "RSA" ] && echo "/rsa")"
+            mkdir -p "$dest"
+            certf="$dest/fullchain.cer"; keyf="$dest/private.key"
+            updated=0
 
-            # 如果证书文件不存在或已过期，生成证书
-            if ! check_certificate_validity "$cert_file"; then
-                echo "正在为 $domain 生成 $cert_type 证书..."
-                issue_output=$($ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" --keylength $([ "$cert_type" = "RSA" ] && echo "2048" || echo "ec-256") 2>&1)
-                if echo "$issue_output" | grep -q 'Skipping. Next renewal time'; then
-                    echo "跳过 $domain 的 $cert_type 证书更新，因为尚未到期。"
-                elif echo "$issue_output" | grep -q 'success'; then
-                    $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "无法为 $domain 安装证书"; return 1; }
-                    echo "已为 $domain 生成并安装 $cert_type 证书"
-                    certificate_updated=true  # 标记证书已更新
-                else
-                    echo "无法为 $domain 生成证书"
-                    exit 1
-                fi
+            if ! check_validity "$certf"; then
+              echo "→ 生成 $domain 的 $type..."
+              $ACME_PATH --issue --force --dns dns_cf -d "$domain" -d "*.$domain" \
+                --keylength $([ "$type" = "RSA" ] && echo 2048 || echo ec-256) >/dev/null 2>&1
+              if [ -f "$src/fullchain.cer" ]; then
+                cp "$src/fullchain.cer" "$certf"; cp "$src/${domain}.key" "$keyf"
+                updated=1; echo "✔ $domain $type 已安装"
+              else
+                echo "✘ 未找到 $domain $type，跳过"
+              fi
             else
-                echo "$domain 的现有 $cert_type 证书仍然有效，无需生成新证书。"
+              echo "— $domain 的 $type 仍有效"
             fi
 
-            if [ "$certificate_updated" = true ]; then
-                return 0  # 返回 0 表示证书更新
-            else
-                return 1  # 返回 1 表示证书未更新
-            fi
+            [ $updated -eq 1 ] && echo $domain
           }
 
-          # 初始化更新标志和域名列表
-          any_certificate_updated=false
-          updated_domains=""  # 用于存储有更新的域名
+          # 批量处理
+          domains=""
+          while read -r d; do
+            domains+=" $(issue_install "$d" EC)"
+            domains+=" $(issue_install "$d" RSA)"
+          done < cloudflare_domains_list.txt
 
-          # 分别生成EC和RSA证书
-          while IFS= read -r domain || [ -n "$domain" ]; do
-            mkdir -p "./ssl/$domain/rsa"
-            # 生成EC证书
-            if issue_and_install_certificate "$domain" "EC"; then
-              any_certificate_updated=true
-              updated_domains="$updated_domains $domain"  # 添加更新的域名
-            fi
-            # 独立生成RSA证书，即使存在EC证书也不跳过
-            if issue_and_install_certificate "$domain" "RSA"; then
-              any_certificate_updated=true
-              updated_domains="$updated_domains $domain"  # 添加更新的域名
-            fi
-          done < cloudflare_domains_list.txt || true
-
-          # 如果有任何证书更新，且 updated_domains 不为空，发送BARK通知
-          if [ "$any_certificate_updated" = true ] && [ -n "$updated_domains" ]; then
-              BARK_URL="${{ secrets.BARK_URL }}"
-              NOTIFICATION_TITLE="SSL证书已更新"
-              unique_domains=$(echo "$updated_domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-              NOTIFICATION_BODY="以下域名的SSL证书已成功更新: $unique_domains"
-    
-              if [ -n "$BARK_URL" ] && [ -n "$NOTIFICATION_BODY" ]; then
-                  ENCODED_BODY=$(echo "$NOTIFICATION_BODY" | sed 's/ /%20/g')
-                  curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$ENCODED_BODY"
-              else
-                  echo "BARK_URL 或 NOTIFICATION_BODY 为空，跳过通知。"
-              fi
-          else
-              echo "没有证书更新，跳过通知。"
+          # 发送 Bark 通知
+          domains=$(echo "$domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+          if [ -n "$domains" ]; then
+            body="以下域名已更新： $domains"
+            curl -s -X POST "${{ secrets.BARK_URL }}/SSL%20Updated/$(echo $body|sed 's/ /%20/g')"
           fi
 
-      - name: Validate new certificates
+      - name: 验证证书
         run: |
-          for cert in $(find ./ssl -name "*.cer"); do
-            openssl x509 -in "$cert" -noout -text || { echo "Invalid certificate: $cert"; exit 1; }
-          done
-          echo "All certificates are valid."
+          find ./ssl -name fullchain.cer | xargs -n1 openssl x509 -noout -text
 
-      - name: Backup certificates to Dropbox
+      - name: 备份到 Dropbox
         run: |
-          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
-          echo "SSL Certificates backup to Dropbox completed."
+          rclone sync ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log
 
-      - name: Backup domain list and rclone config
-        run: |
-          rclone copy cloudflare_domains_list.txt dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_domainlist.log || exit 1
-          rclone copy ~/.config/rclone dropbox:$DROPBOX_PATH/rclone-config $RCLONE_PARAMS --log-file=rclone_config.log || exit 1
-          echo "Domain list and rclone config backup to Dropbox completed."
+      - name: 清理工作目录
+        run: rm -rf ssl cloudflare_domains_list.txt
 
-      - name: Cleanup local certificates
-        run: |
-          rm -rf ./ssl
-          echo "Local SSL certificates cleaned up."
-
-      - name: Update GitHub Secrets
+      - name: 更新 RCLONE_CONFIG Secret
         env:
           CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
-          REPO: ${{ github.repository }}
         run: |
-          RCLONE_CONFIG=$(cat ~/.config/rclone/rclone.conf)
           echo "${CLI_TOKEN}" | gh auth login --with-token
-          gh secret set RCLONE_CONFIG -b"${RCLONE_CONFIG}" --repo "${REPO}" || { echo "Failed to update RCLONE_CONFIG secret"; exit 1; }
-          echo "Updated RCLONE_CONFIG secret."
+          gh secret set RCLONE_CONFIG -b"$(cat ~/.config/rclone/rclone.conf)"
 ```
 
-### 2. 自动检查和更新 SSL 证书的工作流
+**改动亮点**：
+- 全局 `set -eo pipefail`，任一步骤出错即终止。
+- 统一用 `fullchain.cer`、`private.key` 命名。
+- 发证与安装合并在一个函数中，返回更新的域名列表。
+- 简化输出与通知逻辑。
 
-创建一个 `.github/workflows/check_ssl_expiry.yml` 文件，内容如下：
+### 2. 检查并更新过期证书（`check_ssl_expiry.yml`）
 
 ```yaml
 name: Check SSL Certificate Expiry and Update Certificates
@@ -215,139 +177,105 @@ env:
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
 jobs:
-  check-and-update-certificates:
+  check-and-update:
     runs-on: ubuntu-latest
-    name: Check SSL Certificate Expiry and Update Certificates
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install rclone and acme.sh
+      - uses: actions/checkout@v4
+      - name: 安装工具
         run: |
           curl https://rclone.org/install.sh | sudo bash
           curl https://get.acme.sh | sh -s email=$EMAIL
 
-      - name: Configure rclone
+      - name: 配置 rclone
         env:
           RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
         run: |
           mkdir -p ~/.config/rclone
           echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
 
-      - name: Sync certificates from Dropbox
+      - name: 同步证书与域名
         run: |
-          rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log || exit 1
-          echo "SSL Certificates synced from Dropbox."
+          set -eo pipefail
+          rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS
+          rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./
 
-      - name: Check certificate expiry and update CHECK_LIST.md
+      - name: 生成 CHECK_LIST.md 并续期
         run: |
-          git config --global user.email $EMAIL
-          git config --global user.name acme
+          set -eo pipefail
+          git config --global user.email "$EMAIL"
+          git config --global user.name "acme-bot"
 
-          check_certificate() {
-            cert_file=$1
-            if [ -f "$cert_file" ]; then
-              expiry_date=$(openssl x509 -enddate -noout -in "$cert_file" | cut -d= -f2)
-              expiry_timestamp=$(date -d "$expiry_date" +%s)
-              current_timestamp=$(date +%s)
-              days_left=$(( (expiry_timestamp - current_timestamp) / 86400 ))
-              echo "$expiry_date|$days_left"
-            else
-              echo "Not found|0"
+          NOW=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          echo "## Certificate Status (Checked at $NOW)" > CHECK_LIST.md
+          echo "|Domain|EC到期|剩余天数|RSA到期|剩余天数|" >> CHECK_LIST.md
+          echo "|-----|-----|--------|-----|--------|" >> CHECK_LIST.md
+
+          trigger=false
+          expire_list=""
+
+          check() {
+            f="$1/fullchain.cer"
+            [ -f "$f" ] || { echo "NOTFOUND|0"; return; }
+            d=$(openssl x509 -enddate -noout -in "$f" | cut -d= -f2)
+            t=$(date -d "$d" +%s)
+            n=$(date +%s)
+            days=$(( (t-n)/86400 ))
+            echo "$d|$days"
+          }
+
+          renew() {
+            dom=$1; typ=$2
+            dir="./ssl/$dom"; [ "$typ" = "RSA" ] && dir+="/rsa"
+            f="$dir/fullchain.cer"; k="$dir/private.key"
+            if ! openssl x509 -checkend $((DAYS_BEFORE_EXPIRY*86400)) -noout -in "$f"; then
+              echo "→ 续期 $dom($typ)..."
+              if [ "$typ" = "EC" ]; then
+                $ACME_PATH --issue --force --dns dns_cf --ecc -d "$dom" -d "*.$dom"
+                $ACME_PATH --installcert --ecc -d "$dom" --key-file "$k" --fullchain-file "$f"
+              else
+                $ACME_PATH --issue --force --dns dns_cf -d "$dom" -d "*.$dom" --keylength 2048
+                $ACME_PATH --installcert -d "$dom" --key-file "$k" --fullchain-file "$f"
+              fi
+              trigger=true; expire_list+=" $dom"
             fi
           }
 
-          CURRENT_TIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          echo "## Certificate Status (Checked at $CURRENT_TIME)" > CHECK_LIST.md
-          echo "| Domain | Expiry Date (EC) | Days Left (EC) | Expiry Date (RSA) | Days Left (RSA) |" >> CHECK_LIST.md
-          echo "|--------|-------------------|----------------|--------------------|--------------------|" >> CHECK_LIST.md
-
-          trigger_renewal=false
-          expiring_domains=""
-
-          # 并行处理域名
-          while IFS= read -r domain || [ -n "$domain" ]; do
-            {
-              ec_result=$(check_certificate "./ssl/$domain/$domain.cer")
-              rsa_result=$(check_certificate "./ssl/$domain/rsa/$domain.cer")
-              
-              IFS='|' read -r ec_expiry ec_days <<< "$ec_result"
-              IFS='|' read -r rsa_expiry rsa_days <<< "$rsa_result"
-
-              echo "| $domain | $ec_expiry | $ec_days | $rsa_expiry | $rsa_days |" >> CHECK_LIST.md
-
-              if [ "$ec_days" -lt "$DAYS_BEFORE_EXPIRY" ] || [ "$rsa_days" -lt "$DAYS_BEFORE_EXPIRY" ]; then
-                trigger_renewal=true
-                expiring_domains="$expiring_domains $domain"
-              fi
-            } &
+          while read -r d; do
+            { IFS='|' read ecd ecdays <<< "$(check "./ssl/$d")"; \
+              IFS='|' read rsad rsadays <<< "$(check "./ssl/$d/rsa")"; \
+              printf "|%s|%s|%s|%s|%s|\n" "$d" "$ecd" "$ecdays" "$rsad" "$rsadays" >> CHECK_LIST.md; \
+              if [ "$ecdays" -lt "$DAYS_BEFORE_EXPIRY" ] || [ "$rsadays" -lt "$DAYS_BEFORE_EXPIRY" ]; then
+                renew "$d" EC; renew "$d" RSA;
+              fi; } &
           done < cloudflare_domains_list.txt
-          wait  # 等待所有并行任务完成
+          wait
 
-          git add CHECK_LIST.md
-          git commit -m "Update CHECK_LIST.md with certificate expiry dates and execution time at $CURRENT_TIME"
-
-          if [ "$trigger_renewal" = true ]; then
-            echo "Certificates are expiring soon, renewing certificates..."
-
-            renew_certificates() {
-              domain=$1
-              cert_type=$2
-              cert_path="./ssl/$domain"
-              [ "$cert_type" = "RSA" ] && cert_path="$cert_path/rsa"
-              cert_file="$cert_path/$domain.cer"
-              key_file="$cert_path/$domain.key"
-
-              if ! openssl x509 -checkend $((DAYS_BEFORE_EXPIRY * 86400)) -noout -in "$cert_file"; then
-                $ACME_PATH --issue --dns dns_cf -d "$domain" -d "*.$domain" || { echo "Failed to issue certificate for $domain"; return 1; }
-                $ACME_PATH --installcert -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" || { echo "Failed to install certificate for $domain"; return 1; }
-                echo "Generated and installed $cert_type certificate for $domain"
-              else
-                echo "Existing $cert_type certificate for $domain is still valid, no need to renew."
-              fi
-            }
-
-            while IFS= read -r domain || [ -n "$domain" ]; do
-              {
-                renew_certificates "$domain" "EC"
-                renew_certificates "$domain" "RSA"
-              } &
-            done < cloudflare_domains_list.txt
-            wait  # 等待所有并行任务完成
-            
-            # 发送通知
-            BARK_URL="${{ secrets.BARK_URL }}"
-            NOTIFICATION_TITLE="SSL证书已更新"
-            NOTIFICATION_BODY="以下域名的SSL证书已更新: $expiring_domains"
-            curl -X POST "$BARK_URL/$NOTIFICATION_TITLE/$NOTIFICATION_BODY"
+          if ! git diff --quiet CHECK_LIST.md; then
+            git add CHECK_LIST.md; git commit -m "Update CHECK_LIST.md at $NOW"; git push
           fi
 
-      - name: Push updated CHECK_LIST.md to repository
-        uses: ad-m/github-push-action@master
+          if [ "$trigger" = true ]; then
+            curl -s -X POST "${{ secrets.BARK_URL }}/SSL%20Updated/$(echo $expire_list|sed 's/ /%20/g')"
+          fi
+
+      - uses: ad-m/github-push-action@master
+        if: ${{ success() }}
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Backup certificates to Dropbox
+      - name: 备份到 Dropbox
         run: |
-          rclone sync ./ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log || exit 1
-          echo "SSL Certificates backup to Dropbox completed."
+          rclone sync ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS
 
-      - name: Clean up local certificates
-        run: |
-          rm -rf ./ssl
-          echo "Local SSL certificates cleaned up."
+      - name: 清理文件
+        run: rm -rf ssl cloudflare_domains_list.txt
 ```
 
-## 步骤三：验证和运行工作流
+## 步骤三：运行与验证
 
-1. **添加 `cloudflare_domains_list.txt` 文件**：在仓库根目录下创建一个名为 `cloudflare_domains_list.txt` 的文件，列出你需要为其生成 SSL 证书的域名。每个域名一行。
+1. 在仓库根目录创建 `cloudflare_domains_list.txt`，每行一个域名。
+2. 手动触发两条 Workflow，观察日志与 Dropbox 备份情况。
+3. 检查 `CHECK_LIST.md` 提交历史与 Bark 通知是否正确。
 
-2. **测试工作流**：手动触发 GitHub Actions 工作流，检查它是否能够成功生成并备份 SSL 证书。你可以在 GitHub Actions 界面中查看详细日志，帮助排查问题。
+---
 
-3. **监控自动更新**：工作流将根据你设置的时间间隔自动检查 SSL 证书的过期情况，并在需要时自动更新证书。
-
-## 结语
-
-通过这个教程，你可以轻松地设置一个自动化的 SSL 证书管理流程。借助 GitHub Actions、Cloudflare 和 Dropbox，你的 SSL 证书将始终保持最新，并且备份也得到了保障。希望这个教程对你有所帮助！如果有任何问题或疑问，欢迎在评论区交流。
-
---- 
