@@ -43,6 +43,8 @@ jobs:
           CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
+          set -eo pipefail
+
           check_certificate_validity() {
             cert=$1
             [ -f "$cert" ] || return 1
@@ -54,13 +56,8 @@ jobs:
 
           issue_and_install_certificate() {
             domain=$1; type=$2
-
-            if [ "$type" = "EC" ]; then
-              src="$HOME/.acme.sh/${domain}_ecc"
-            else
-              src="$HOME/.acme.sh/$domain"
-            fi
-
+            updated=0
+            src="$HOME/.acme.sh/${domain}$([ "$type" = "EC" ] && echo "_ecc" || echo "")"
             dest="./ssl/$domain$([ "$type" = "RSA" ] && echo "/rsa" || echo "")"
             mkdir -p "$dest"
 
@@ -69,49 +66,50 @@ jobs:
             logf="$dest/${type}_issue.log"
 
             if ! check_certificate_validity "$certf"; then
-              echo "正在为 $domain 生成 $type 证书..."
-
-              force=""
-              if [ "$type" = "RSA" -a ! -d "$HOME/.acme.sh/$domain" ]; then
-                force="--force"
-              elif [ "$type" = "EC" -a ! -d "$HOME/.acme.sh/${domain}_ecc" ]; then
-                force="--force"
-              fi
-
-              # 签发
-              $ACME_PATH --issue $force --dns dns_cf -d "$domain" -d "*.$domain" \
+              echo "→ 生成 $domain 的 $type 证书…"
+              $ACME_PATH --issue --force --dns dns_cf -d "$domain" -d "*.$domain" \
                 --keylength $([ "$type" = "RSA" ] && echo 2048 || echo ec-256) \
                 >"$logf" 2>&1
 
-              # 如果源目录中有 fullchain 和 key，则复制；否则跳过 RSA/EC
               if [ -f "$src/fullchain.cer" ] && [ -f "$src/${domain}.key" ]; then
                 cp "$src/fullchain.cer" "$certf"
                 cp "$src/${domain}.key" "$keyf"
                 [ -f "$src/ca.cer" ] && cp "$src/ca.cer" "$dest/ca.cer"
-                echo "已为 $domain 安装 $type 证书。"
+                echo "✔ 已安装 $domain 的 $type 证书。"
+                updated=1
               else
-                echo "未在 $src 中找到 $type 证书，跳过安装。"
+                echo "✘ 未在 $src 中找到 $type 证书，跳过。"
               fi
             else
-              echo "$domain 的 $type 证书仍然有效，跳过。"
+              echo "— $domain 的 $type 证书仍然有效，跳过。"
+            fi
+
+            if [ $updated -eq 1 ]; then
+              # 只有在确实更新时才往 domains 里加
+              domains="$domains $domain"
             fi
           }
 
-          any=0; domains=""
+          domains=""
+
           while IFS= read -r domain || [ -n "$domain" ]; do
-            issue_and_install_certificate "$domain" EC && any=1 && domains="$domains $domain"
-            issue_and_install_certificate "$domain" RSA && any=1 && domains="$domains $domain"
+            issue_and_install_certificate "$domain" EC
+            issue_and_install_certificate "$domain" RSA
           done < cloudflare_domains_list.txt
 
-          if [ $any -eq 1 ]; then
+          # DEBUG: 看看 domains 里究竟收集了哪些值
+          echo ">>> domains collected: '$domains'"
+
+          if [ -n "$domains" ]; then
             uniq=$(echo $domains | tr ' ' '\n' | sort -u | tr '\n' ' ')
             body="以下域名已更新证书：\n$uniq"
             url="${{ secrets.BARK_URL }}"
             ENCODED=$(echo "$body" | sed 's/ /%20/g; s/\\n/%0A/g')
             curl -X POST "$url/SSL%20Updated/$ENCODED"
           else
-            echo "无证书更新。"
+            echo "无证书更新，且不会发送通知。"
           fi
+
 
       - name: Validate new certificates
         run: |
