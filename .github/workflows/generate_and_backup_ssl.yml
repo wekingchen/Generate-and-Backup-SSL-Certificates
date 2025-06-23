@@ -61,26 +61,34 @@ jobs:
             src="$HOME/.acme.sh/${domain}$([ "$type" = "EC" ] && echo "_ecc" || echo "")"
             dest="./ssl/$domain$([ "$type" = "RSA" ] && echo "/rsa" || echo "")"
             mkdir -p "$dest"
-
             certf="$dest/fullchain.cer"
             keyf="$dest/private.key"
             logf="$dest/${type}_issue.log"
 
             if ! check_certificate_validity "$certf"; then
               echo "→ 生成 $domain 的 $type 证书…"
-              $ACME_PATH --issue --force --dns dns_cf -d "$domain" -d "*.$domain" \
-                --keylength $([ "$type" = "RSA" ] && echo 2048 || echo ec-256) \
-                >"$logf" 2>&1
+              if ! $ACME_PATH --issue --force --server letsencrypt --dns dns_cf -d "$domain" -d "*.$domain" \
+                --keylength $([ "$type" = "RSA" ] && echo 2048 || echo ec-256) >"$logf" 2>&1; then
+                echo "✘ $type 签发失败，请查看日志："
+                cat "$logf"
+                return 1
+              fi
 
               if [ -f "$src/fullchain.cer" ] && [ -f "$src/${domain}.key" ]; then
                 cp "$src/fullchain.cer" "$certf"
                 cp "$src/${domain}.key" "$keyf"
-                [ -f "$src/ca.cer" ] && cp "$src/ca.cer" "$dest/ca.cer"
-                echo "✔ 已安装 $domain 的 $type 证书。"
-                updated=1
+              elif [ -f "$src/${domain}.cer" ] && [ -f "$src/${domain}.key" ]; then
+                cp "$src/${domain}.cer" "$certf"
+                cp "$src/${domain}.key" "$keyf"
               else
-                echo "✘ 未在 $src 中找到 $type 证书，跳过。"
+                echo "✘ 未在 $src 中找到 $type 证书，目录内容如下："
+                ls -al "$src"
+                return 1
               fi
+
+              [ -f "$src/ca.cer" ] && cp "$src/ca.cer" "$dest/ca.cer"
+              echo "✔ 已安装 $domain 的 $type 证书。"
+              updated=1
             else
               echo "— $domain 的 $type 证书仍然有效，跳过。"
             fi
@@ -91,7 +99,6 @@ jobs:
           }
 
           domains=""
-
           while IFS= read -r domain || [ -n "$domain" ]; do
             issue_and_install_certificate "$domain" EC
             issue_and_install_certificate "$domain" RSA
