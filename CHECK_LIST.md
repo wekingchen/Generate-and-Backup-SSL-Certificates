@@ -1,10 +1,10 @@
-## Certificate Status (Checked at 2025-08-17 02:58:02 UTC)
+## Certificate Status (Checked at 2025-08-18 03:01:17 UTC)
 | Domain | EC Expiry | Days Left EC | RSA Expiry | Days Left RSA |
 |--------|-----------|-------------|------------|--------------|
-| gordon.run | Sep 21 01:45:11 2025 GMT | 34 | Sep 21 01:45:14 2025 GMT | 34 |
-| 443502.xyz | Sep 21 01:43:15 2025 GMT | 34 | Sep 21 01:43:19 2025 GMT | 34 |
-| free4me.pp.ua | Sep 21 01:44:35 2025 GMT | 34 | Sep 21 01:44:38 2025 GMT | 34 |
-| myddns.plus | Sep 21 01:45:46 2025 GMT | 34 | Sep 21 01:45:49 2025 GMT | 34 |
-| fgw2world.site | Sep 21 01:43:55 2025 GMT | 34 | Sep 21 01:44:01 2025 GMT | 34 |
-| queena.win | Sep 21 01:47:05 2025 GMT | 34 | Sep 21 01:47:14 2025 GMT | 34 |
-| sqqq.cf | Sep 21 01:46:28 2025 GMT | 34 | Sep 21 01:46:30 2025 GMT | 34 |
+| sqqq.cf | Sep 21 01:46:28 2025 GMT | 33 | Sep 21 01:46:30 2025 GMT | 33 |
+| 443502.xyz | Sep 21 01:43:15 2025 GMT | 33 | Sep 21 01:43:19 2025 GMT | 33 |
+| queena.win | Sep 21 01:47:05 2025 GMT | 33 | Sep 21 01:47:14 2025 GMT | 33 |
+| myddns.plus | Sep 21 01:45:46 2025 GMT | 33 | Sep 21 01:45:49 2025 GMT | 33 |
+| free4me.pp.ua | Sep 21 01:44:35 2025 GMT | 33 | Sep 21 01:44:38 2025 GMT | 33 |
+| fgw2world.site | Sep 21 01:43:55 2025 GMT | 33 | Sep 21 01:44:01 2025 GMT | 33 |
+| gordon.run | Sep 21 01:45:11 2025 GMT | 33 | Sep 21 01:45:14 2025 GMT | 33 |
