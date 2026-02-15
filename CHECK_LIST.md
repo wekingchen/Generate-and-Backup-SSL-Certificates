@@ -1,10 +1,10 @@
-## Certificate Status (Checked at 2026-02-14 03:31:22 UTC)
+## Certificate Status (Checked at 2026-02-15 03:44:38 UTC)
 | Domain | EC Expiry | Days Left EC | RSA Expiry | Days Left RSA |
 |--------|-----------|-------------|------------|--------------|
-| fgw2world.site | Mar 17 22:48:19 2026 GMT | 31 | Mar 17 22:48:23 2026 GMT | 31 |
-| myddns.plus | Mar 17 22:50:16 2026 GMT | 31 | Mar 17 22:50:20 2026 GMT | 31 |
-| 443502.xyz | Mar 17 22:47:39 2026 GMT | 31 | Mar 17 22:47:43 2026 GMT | 31 |
-| gordon.run | Mar 17 22:49:36 2026 GMT | 31 | Mar 17 22:49:39 2026 GMT | 31 |
-| free4me.pp.ua | Mar 17 22:48:57 2026 GMT | 31 | Mar 17 22:49:01 2026 GMT | 31 |
-| sqqq.cf | Mar 17 22:50:57 2026 GMT | 31 | Mar 17 22:51:00 2026 GMT | 31 |
-| queena.win | Mar 17 22:51:40 2026 GMT | 31 | Mar 17 22:51:43 2026 GMT | 31 |
+| queena.win | May 15 22:58:05 2026 GMT | 89 | May 15 22:58:10 2026 GMT | 89 |
+| fgw2world.site | May 15 22:54:45 2026 GMT | 89 | May 15 22:54:48 2026 GMT | 89 |
+| free4me.pp.ua | May 15 22:55:25 2026 GMT | 89 | May 15 22:55:28 2026 GMT | 89 |
+| myddns.plus | May 15 22:56:44 2026 GMT | 89 | May 15 22:56:47 2026 GMT | 89 |
+| gordon.run | May 15 22:56:04 2026 GMT | 89 | May 15 22:56:08 2026 GMT | 89 |
+| sqqq.cf | May 15 22:57:25 2026 GMT | 89 | May 15 22:57:29 2026 GMT | 89 |
+| 443502.xyz | May 15 22:54:05 2026 GMT | 89 | May 15 22:54:08 2026 GMT | 89 |
