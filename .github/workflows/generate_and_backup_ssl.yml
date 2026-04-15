@@ -20,7 +20,7 @@ jobs:
     name: Generate and Backup SSL Certificates
     steps:
       - name: Checkout master
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install rclone and acme.sh
         run: |
