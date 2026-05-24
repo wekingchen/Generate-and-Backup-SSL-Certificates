@@ -2,7 +2,7 @@ name: Codex 速蹬窗口监控
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # 每5分钟检查一次，可按需调整
+    - cron: '*/5 * * * *'   # 每5分钟检查一次
   workflow_dispatch:        # 允许手动触发测试
 
 jobs:
@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: 检查窗口状态并推送Bark
         env:
-          BARK_KEY: ${{ secrets.BARK_KEY }}
+          BARK_URL: ${{ secrets.BARK_URL }}   # 完整的Bark基础URL，例如 http://1.14.107.190:8181/onAd6maLm7gejfcN4xGqW8/
         run: |
           # 获取最新JSON
           json=$(curl -s https://codex-reset-radar.pages.dev/current.json)
@@ -21,10 +21,8 @@ jobs:
           prob_24h=$(echo "$json" | jq -r '.prediction.probability_24h')
           rec_action=$(echo "$json" | jq -r '.recommended_action')
           message=$(echo "$json" | jq -r '.message')
-          last_start=$(echo "$json" | jq -r '.last_window.detected_start // "N/A"')
-          last_end=$(echo "$json" | jq -r '.last_window.detected_end // "N/A"')
 
-          # 判断是否需要推送（可根据自己偏好修改阈值）
+          # 判断是否需要推送（可自定义阈值）
           should_alert=false
           if [ "$window_open" == "true" ]; then
             should_alert=true
@@ -35,12 +33,19 @@ jobs:
           fi
 
           if [ "$should_alert" == true ]; then
-            # 构造Bark推送内容（标题/正文需做URL编码）
+            # 构造推送标题和正文
             title="Codex速蹬窗口来了！"
             body="窗口开启：${window_open} | 24h概率：${prob_24h} | 建议动作：${rec_action} | 消息：${message}"
 
-            # 推送（Bark 标准接口，可增加?sound=xxx等参数）
-            curl -s "https://api.day.app/${BARK_KEY}/${title}/${body}?group=Codex&isArchive=1" -o /dev/null
+            # 标准化BARK_URL（确保以/结尾）
+            base=$(echo "$BARK_URL" | sed 's:/*$::')/
+
+            # 对标题和正文进行URL编码（安全处理特殊字符）
+            encoded_title=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$title")
+            encoded_body=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$body")
+
+            # 推送到Bark
+            curl -s "${base}${encoded_title}/${encoded_body}?group=Codex&isArchive=1" -o /dev/null
 
             echo "已推送告警"
           else
