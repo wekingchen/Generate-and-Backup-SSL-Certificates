@@ -1,0 +1,48 @@
+name: Codex 速蹬窗口监控
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # 每5分钟检查一次，可按需调整
+  workflow_dispatch:        # 允许手动触发测试
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查窗口状态并推送Bark
+        env:
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+        run: |
+          # 获取最新JSON
+          json=$(curl -s https://codex-reset-radar.pages.dev/current.json)
+
+          # 提取关键字段
+          window_open=$(echo "$json" | jq -r '.window_open')
+          prob_24h=$(echo "$json" | jq -r '.prediction.probability_24h')
+          rec_action=$(echo "$json" | jq -r '.recommended_action')
+          message=$(echo "$json" | jq -r '.message')
+          last_start=$(echo "$json" | jq -r '.last_window.detected_start // "N/A"')
+          last_end=$(echo "$json" | jq -r '.last_window.detected_end // "N/A"')
+
+          # 判断是否需要推送（可根据自己偏好修改阈值）
+          should_alert=false
+          if [ "$window_open" == "true" ]; then
+            should_alert=true
+          elif [ $(echo "$prob_24h > 0.3" | bc) -eq 1 ]; then
+            should_alert=true
+          elif [ "$rec_action" != "wait" ]; then
+            should_alert=true
+          fi
+
+          if [ "$should_alert" == true ]; then
+            # 构造Bark推送内容（标题/正文需做URL编码）
+            title="Codex速蹬窗口来了！"
+            body="窗口开启：${window_open} | 24h概率：${prob_24h} | 建议动作：${rec_action} | 消息：${message}"
+
+            # 推送（Bark 标准接口，可增加?sound=xxx等参数）
+            curl -s "https://api.day.app/${BARK_KEY}/${title}/${body}?group=Codex&isArchive=1" -o /dev/null
+
+            echo "已推送告警"
+          else
+            echo "当前状态正常，不推送"
+          fi
