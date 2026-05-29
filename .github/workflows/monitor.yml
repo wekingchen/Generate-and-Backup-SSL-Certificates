@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: 检查窗口状态并推送Bark
         env:
-          BARK_URL: ${{ secrets.BARK_URL }}   # 完整的Bark基础URL，例如 http://1.14.107.190:8181/onAd6maLm7gejfcN4xGqW8/
+          BARK_URL: ${{ secrets.BARK_URL }}   # 完整的Bark基础URL
         run: |
           # 获取最新JSON
           json=$(curl -fsSL https://codex-reset-radar.pages.dev/current.json)
