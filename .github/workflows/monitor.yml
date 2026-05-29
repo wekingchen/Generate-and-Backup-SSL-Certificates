@@ -14,7 +14,7 @@ jobs:
           BARK_URL: ${{ secrets.BARK_URL }}   # 完整的Bark基础URL，例如 http://1.14.107.190:8181/onAd6maLm7gejfcN4xGqW8/
         run: |
           # 获取最新JSON
-          json=$(curl -s https://codex-reset-radar.pages.dev/current.json)
+          json=$(curl -fsSL https://codex-reset-radar.pages.dev/current.json)
 
           # 提取关键字段
           window_open=$(echo "$json" | jq -r '.window_open')
@@ -24,15 +24,15 @@ jobs:
 
           # 判断是否需要推送（可自定义阈值）
           should_alert=false
-          if [ "$window_open" == "true" ]; then
+          if [ "$window_open" = "true" ]; then
             should_alert=true
-          elif [ $(echo "$prob_24h > 0.3" | bc) -eq 1 ]; then
+          elif [ "$(echo "$prob_24h > 0.3" | bc)" -eq 1 ]; then
             should_alert=true
           elif [ "$rec_action" != "wait" ]; then
             should_alert=true
           fi
 
-          if [ "$should_alert" == true ]; then
+          if [ "$should_alert" = true ]; then
             # 构造推送标题和正文
             title="Codex速蹬窗口来了！"
             body="窗口开启：${window_open} | 24h概率：${prob_24h} | 建议动作：${rec_action} | 消息：${message}"
@@ -44,10 +44,10 @@ jobs:
             encoded_title=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$title")
             encoded_body=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$body")
 
-            # 推送到Bark
-            curl -s "${base}${encoded_title}/${encoded_body}?group=Codex&isArchive=1" -o /dev/null
+            # Bark归档消息保留24小时：ttl单位为秒，86400 = 24小时
+            curl -fsS "${base}${encoded_title}/${encoded_body}?group=Codex&isArchive=1&ttl=86400" -o /dev/null
 
-            echo "已推送告警"
+            echo "已推送告警，Bark归档消息将在24小时后自动删除"
           else
             echo "当前状态正常，不推送"
           fi
