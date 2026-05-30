@@ -44,8 +44,8 @@ jobs:
             encoded_title=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$title")
             encoded_body=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$body")
 
-            # Bark归档消息保留24小时：ttl单位为秒，86400 = 24小时
-            curl -fsS "${base}${encoded_title}/${encoded_body}?group=Codex&isArchive=1&ttl=86400" -o /dev/null
+            # Bark归档消息保留10小时：ttl单位为秒，36000 = 10小时
+            curl -fsS "${base}${encoded_title}/${encoded_body}?group=Codex&isArchive=1&ttl=36000" -o /dev/null
 
             echo "已推送告警，Bark归档消息将在24小时后自动删除"
           else
