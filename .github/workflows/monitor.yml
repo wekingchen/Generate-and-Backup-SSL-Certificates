@@ -69,7 +69,7 @@ jobs:
             encoded_title=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$title")
             encoded_body=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$body")
 
-            curl -fsS "${base}${encoded_title}/${encoded_body}?group=Codex&isArchive=1&ttl=86400" -o /dev/null
+            curl -fsS "${base}${encoded_title}/${encoded_body}?group=Codex&isArchive=1&ttl=36000" -o /dev/null
 
             echo "已推送告警"
           else
