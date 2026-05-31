@@ -2,52 +2,76 @@ name: Codex 速蹬窗口监控
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # 每15分钟检查一次
-  workflow_dispatch:        # 允许手动触发测试
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 检查窗口状态并推送Bark
+      - name: 检查窗口状态并推送 Bark
         env:
-          BARK_URL: ${{ secrets.BARK_URL }}   # 完整的Bark基础URL
+          BARK_URL: ${{ secrets.BARK_URL }}
         run: |
-          # 获取最新JSON
+          set -euo pipefail
+
           json=$(curl -fsSL https://codex-reset-radar.pages.dev/current.json)
 
-          # 提取关键字段
-          window_open=$(echo "$json" | jq -r '.window_open')
-          prob_24h=$(echo "$json" | jq -r '.prediction.probability_24h')
-          rec_action=$(echo "$json" | jq -r '.recommended_action')
-          message=$(echo "$json" | jq -r '.message')
+          window_open=$(echo "$json" | jq -r '.window_open // false')
+          prob_24h=$(echo "$json" | jq -r '.prediction.probability_24h // 0')
+          rec_action=$(echo "$json" | jq -r '.recommended_action // "wait"')
+          message=$(echo "$json" | jq -r '.message // ""')
 
-          # 判断是否需要推送（可自定义阈值）
+          prob_percent=$(python3 -c "import sys; print(f'{float(sys.argv[1]) * 100:.0f}')" "$prob_24h" 2>/dev/null || echo "0")
+
+          case "$rec_action" in
+            use_remaining_tokens)
+              action_text="立即消耗剩余额度"
+              ;;
+            prepare)
+              action_text="准备速蹬"
+              ;;
+            monitor)
+              action_text="持续观察"
+              ;;
+            wait)
+              action_text="继续等待"
+              ;;
+            *)
+              action_text="$rec_action"
+              ;;
+          esac
+
           should_alert=false
+
           if [ "$window_open" = "true" ]; then
             should_alert=true
-          elif [ "$(echo "$prob_24h > 0.3" | bc)" -eq 1 ]; then
+          elif python3 -c "import sys; exit(0 if float(sys.argv[1]) > 0.3 else 1)" "$prob_24h" 2>/dev/null; then
             should_alert=true
           elif [ "$rec_action" != "wait" ]; then
             should_alert=true
           fi
 
           if [ "$should_alert" = true ]; then
-            # 构造推送标题和正文
-            title="Codex速蹬窗口来了！"
-            body="窗口开启：${window_open} | 24h概率：${prob_24h} | 建议动作：${rec_action} | 消息：${message}"
+            if [ "$window_open" = "true" ]; then
+              title="🚀 Codex速蹬窗口已开启"
+              status_text="开放"
+            else
+              title="⏳ Codex速蹬机会预警"
+              status_text="关闭"
+            fi
 
-            # 标准化BARK_URL（确保以/结尾）
+            body=$(printf "状态：%s\n\n建议：%s\n24小时开启概率：%s%%\n\n%s" "$status_text" "$action_text" "$prob_percent" "$message")
+
             base=$(echo "$BARK_URL" | sed 's:/*$::')/
 
-            # 对标题和正文进行URL编码（安全处理特殊字符）
             encoded_title=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$title")
             encoded_body=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$body")
 
-            # Bark归档消息保留10小时：ttl单位为秒，36000 = 10小时
-            curl -fsS "${base}${encoded_title}/${encoded_body}?group=Codex&isArchive=1&ttl=36000" -o /dev/null
+            curl -fsS "${base}${encoded_title}/${encoded_body}?group=Codex&isArchive=1&ttl=86400" -o /dev/null
 
-            echo "已推送告警，Bark归档消息将在24小时后自动删除"
+            echo "已推送告警"
           else
             echo "当前状态正常，不推送"
           fi
