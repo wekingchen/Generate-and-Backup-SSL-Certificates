@@ -130,6 +130,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup
+        if: ${{ always() }}
         run: |
           rm -rf ./ssl cloudflare_domains_list.txt
           echo "Cleaned up local files."
