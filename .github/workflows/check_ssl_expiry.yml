@@ -1,8 +1,7 @@
 name: Check SSL Certificate Expiry and Update Certificates
 
 on:
-  schedule:
-    - cron: "0 1 * * *"
+  # 临时暂停定时任务：待签发限额恢复并通过修复验证后再启用。
   workflow_dispatch:
 
 env:
