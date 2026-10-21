@@ -31,7 +31,6 @@ jobs:
           set -euo pipefail
           test -n "$CF_Token"
           test -n "$CF_Account_ID"
-          test -n "$RCLONE_CONFIG"
           test -n "$EMAIL"
           curl -fsSL https://rclone.org/install.sh | sudo bash
           curl -fsSL https://get.acme.sh | sh -s email="$EMAIL"
@@ -42,6 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -n "$RCLONE_CONFIG"
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
           chmod 600 ~/.config/rclone/rclone.conf
