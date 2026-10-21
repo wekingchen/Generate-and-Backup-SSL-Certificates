@@ -5,8 +5,7 @@ concurrency:
   cancel-in-progress: false
 
 on:
-  schedule:
-    - cron: "35 23 * * *"
+  # 生产定时任务暂停，须完成受控验收后单独恢复。
   workflow_dispatch:
 
 env:
