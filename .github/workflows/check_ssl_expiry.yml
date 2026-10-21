@@ -50,29 +50,30 @@ jobs:
           git config --global user.email "$EMAIL"
           git config --global user.name "acme-bot"
 
-          # CHECK_LIST.md 的五列标题、顺序和日期格式保持不变。
-          NOW=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          echo "## Certificate Status (Checked at $NOW)" > CHECK_LIST.md
-          echo "| Domain | EC Expiry | Days Left EC | RSA Expiry | Days Left RSA |" >> CHECK_LIST.md
+          # 保持五列结构和域名顺序；仅将标题、缺失提示和显示日期改为中文。
+          NOW=$(TZ=Asia/Shanghai date +"%Y年%m月%d日 %H:%M:%S")
+          echo "## SSL 证书状态（检查时间：$NOW，北京时间 UTC+8）" > CHECK_LIST.md
+          echo "| 域名 | EC 到期时间 | EC 剩余天数 | RSA 到期时间 | RSA 剩余天数 |" >> CHECK_LIST.md
           echo "|--------|-----------|-------------|------------|--------------|" >> CHECK_LIST.md
 
           check_cert() {
             cert="$1/fullchain.cer"
             if [ ! -s "$cert" ]; then
-              echo "NOTFOUND|0"
+              echo "未找到|0"
               return
             fi
             if ! exp_date=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2); then
-              echo "NOTFOUND|0"
+              echo "未找到|0"
               return
             fi
             if ! exp_ts=$(date -d "$exp_date" +%s 2>/dev/null); then
-              echo "NOTFOUND|0"
+              echo "未找到|0"
               return
             fi
             now_ts=$(date +%s)
             days=$(( (exp_ts - now_ts)/86400 ))
-            echo "$exp_date|$days"
+            exp_display=$(TZ=Asia/Shanghai date -d "@$exp_ts" +"%Y年%m月%d日 %H:%M:%S")
+            echo "$exp_display|$days"
           }
 
           if [ ! -s cloudflare_domains_list.txt ]; then
@@ -110,7 +111,7 @@ jobs:
 
           if ! git diff --quiet CHECK_LIST.md; then
             git add CHECK_LIST.md
-            git commit -m "Update CHECK_LIST.md at $NOW"
+            git commit -m "更新证书状态表：$NOW（北京时间）"
             git push
           else
             echo "CHECK_LIST.md 无变化，跳过提交。"
