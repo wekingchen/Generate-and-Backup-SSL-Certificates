@@ -80,6 +80,7 @@ run_case() {
     RATE_LIMIT_DOMAIN="${RATE_LIMIT_DOMAIN:-}" \
     SSL_ONLY_DOMAIN="${SSL_ONLY_DOMAIN:-}" \
     SSL_ONLY_TYPE="${SSL_ONLY_TYPE:-}" \
+    SSL_MAX_ISSUES_PER_RUN="${SSL_MAX_ISSUES_PER_RUN:-0}" \
     MISMATCH_DOMAIN="${MISMATCH_DOMAIN:-}" \
     bash "$RENEW_SCRIPT" )
 }
@@ -168,5 +169,42 @@ RATE_LIMIT_DOMAIN=limited.example run_case
 assert_output "had_failures=true"
 assert_output "failed_domains=limited.example/EC"
 [[ "$(wc -l < "$CASE_DIR/calls")" -eq 1 ]]
+
+
+echo "Test 7: scheduled mode caps issuance at two attempts and defers the rest"
+new_case "batch"
+for name in first.example second.example; do
+  make_pair "$name" EC "$CASE_DIR/fixtures/$name/EC"
+  make_pair "$name" RSA "$CASE_DIR/fixtures/$name/RSA"
+done
+printf 'first.example\nsecond.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
+SSL_MAX_ISSUES_PER_RUN=2 run_case
+assert_output "had_failures=false"
+assert_output "updated_domains=first.example"
+assert_output "deferred_certificates=second.example/EC,second.example/RSA"
+[[ "$(wc -l < "$CASE_DIR/calls")" -eq 2 ]]
+
+echo "Test 8: a persisted 429 retry-after prevents any further CA requests"
+new_case "cooldown"
+mkdir -p "$CASE_DIR/work/ssl/cool.example"
+printf 'HTTP 429 rateLimited: retry after 2099-01-01 00:00:00 UTC\n' \
+  > "$CASE_DIR/work/ssl/cool.example/EC_issue.log"
+make_pair cool.example RSA "$CASE_DIR/work/ssl/cool.example/rsa"
+printf 'cool.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
+SSL_MAX_ISSUES_PER_RUN=2 run_case
+assert_output "had_failures=false"
+assert_output "deferred_certificates=cool.example/EC"
+[[ ! -e "$CASE_DIR/calls" ]]
+
+echo "Test 9: 429 without Retry-After falls back to log mtime-based cooldown"
+new_case "fallback"
+mkdir -p "$CASE_DIR/work/ssl/fallback.example"
+printf 'HTTP 429 rateLimited too many certificates\n' > "$CASE_DIR/work/ssl/fallback.example/EC_issue.log"
+make_pair fallback.example RSA "$CASE_DIR/work/ssl/fallback.example/rsa"
+printf 'fallback.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
+SSL_MAX_ISSUES_PER_RUN=2 run_case
+assert_output "had_failures=false"
+assert_output "deferred_certificates=fallback.example/EC"
+[[ ! -e "$CASE_DIR/calls" ]]
 
 echo "All offline SSL renewal regression tests passed."
