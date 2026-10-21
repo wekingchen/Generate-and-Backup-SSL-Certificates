@@ -6,6 +6,8 @@ on:
       - ".github/scripts/**"
       - ".github/tests/**"
       - ".github/workflows/ssl_offline_tests.yml"
+      - ".github/workflows/generate_and_backup_ssl.yml"
+      - ".github/workflows/check_ssl_expiry.yml"
   workflow_dispatch:
 
 permissions:
