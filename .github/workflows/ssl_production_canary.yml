@@ -18,7 +18,7 @@ jobs:
       CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
       ACME_PATH: /home/runner/.acme.sh/acme.sh
       DAYS_BEFORE_EXPIRY: "30"
-      SSL_ONLY_DOMAIN: gordon.run
+      SSL_ONLY_DOMAIN: myddns.plus
       SSL_ONLY_TYPE: EC
       DROPBOX_PATH: SSL
       RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
@@ -69,6 +69,7 @@ jobs:
           [[ "$count" -eq 12 ]]
           find ssl -type f ! -path "ssl/$SSL_ONLY_DOMAIN/fullchain.cer" \
             ! -path "ssl/$SSL_ONLY_DOMAIN/private.key" \
+            ! -path "ssl/$SSL_ONLY_DOMAIN/ca.cer" \
             ! -path "ssl/$SSL_ONLY_DOMAIN/EC_issue.log" -print0 |
             LC_ALL=C sort -z | xargs -0 -r sha256sum > /tmp/unchanged_cert_hashes
       - name: Issue exactly one EC certificate through production Let's Encrypt
@@ -95,7 +96,7 @@ jobs:
           a=$(openssl x509 -in "$cert" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)
           b=$(openssl pkey -in "$key" -pubout -outform DER | sha256sum | cut -d' ' -f1)
           [[ "$a" == "$b" ]]
-          echo "✔ 已验证 gordon.run 的新 EC 证书及所有未选择的旧文件。"
+          echo "✔ 已验证 myddns.plus 的新 EC 证书及所有未选择的旧文件。"
       - name: Protect remote files from accidental deletion
         shell: bash
         run: |
@@ -124,7 +125,7 @@ jobs:
           cmp -s "ssl/$SSL_ONLY_DOMAIN/fullchain.cer" /tmp/ssl_canary_readback/fullchain.cer
           cmp -s "ssl/$SSL_ONLY_DOMAIN/private.key" /tmp/ssl_canary_readback/private.key
           echo "### 单域名生产验证通过" >> "$GITHUB_STEP_SUMMARY"
-          echo "gordon.run：只更新 EC P-256；RSA 与其他域名文件校验保持原样；远端证书与本地一致。" >> "$GITHUB_STEP_SUMMARY"
+          echo "myddns.plus：只更新 EC P-256；RSA 与其他域名文件校验保持原样；远端证书与本地一致。" >> "$GITHUB_STEP_SUMMARY"
       - name: Clean local private material
         if: always()
         run: |
