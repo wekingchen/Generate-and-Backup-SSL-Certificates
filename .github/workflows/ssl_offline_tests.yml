@@ -1,12 +1,6 @@
 name: Offline SSL Renewal Regression Tests
 
 on:
-  push:
-    branches: [fix/ssl-renewal-reliability-20261016]
-    paths:
-      - ".github/scripts/**"
-      - ".github/tests/**"
-      - ".github/workflows/ssl_offline_tests.yml"
   pull_request:
     paths:
       - ".github/scripts/**"
