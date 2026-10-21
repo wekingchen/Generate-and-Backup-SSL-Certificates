@@ -94,7 +94,7 @@ jobs:
           gh secret set RCLONE_CONFIG -b"$(cat ~/.config/rclone/rclone.conf)"
 
       - name: Notify certificate result
-        if: ${{ always() && steps.renew.outcome == 'success' }}
+        if: ${{ always() && steps.renew.outcome == 'success' && steps.backup.outcome == 'success' }}
         env:
           BARK_URL: ${{ secrets.BARK_URL }}
           UPDATED_DOMAINS: ${{ steps.renew.outputs.updated_domains }}
