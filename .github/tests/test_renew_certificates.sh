@@ -15,6 +15,10 @@ if [[ "${1:-}" == "--issue" ]]; then
   done
   [[ -n "$domain" && -n "$keylength" ]]
   printf '%s/%s\n' "$domain" "$keylength" >> "$MOCK_ACME_CALLS"
+  if [[ "$domain" == "${RATE_LIMIT_DOMAIN:-}" ]]; then
+    echo "HTTP 429 rateLimited: too many certificates for exact set" >&2
+    exit 37
+  fi
   if [[ "$domain" == "${FAIL_DOMAIN:-}" ]]; then
     echo "Simulated ACME failure for $domain" >&2
     exit 37
@@ -73,6 +77,9 @@ run_case() {
     CERT_FIXTURES="$CASE_DIR/fixtures" \
     MOCK_ACME_CALLS="$CASE_DIR/calls" \
     FAIL_DOMAIN="${FAIL_DOMAIN:-}" \
+    RATE_LIMIT_DOMAIN="${RATE_LIMIT_DOMAIN:-}" \
+    SSL_ONLY_DOMAIN="${SSL_ONLY_DOMAIN:-}" \
+    SSL_ONLY_TYPE="${SSL_ONLY_TYPE:-}" \
     MISMATCH_DOMAIN="${MISMATCH_DOMAIN:-}" \
     bash "$RENEW_SCRIPT" )
 }
@@ -139,5 +146,27 @@ if run_case; then
   exit 1
 fi
 [[ ! -e "$CASE_DIR/calls" ]]
+
+
+echo "Test 5: one domain and one algorithm is allowed for controlled acceptance"
+new_case "selected"
+make_pair chosen.example EC "$CASE_DIR/fixtures/chosen.example/EC"
+make_pair other.example EC "$CASE_DIR/work/ssl/other.example"
+make_pair other.example RSA "$CASE_DIR/work/ssl/other.example/rsa"
+printf 'chosen.example\nother.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
+SSL_ONLY_DOMAIN=chosen.example SSL_ONLY_TYPE=EC run_case
+assert_output "had_failures=false"
+assert_output "updated_domains=chosen.example"
+[[ -s "$CASE_DIR/work/ssl/chosen.example/fullchain.cer" ]]
+[[ ! -e "$CASE_DIR/work/ssl/chosen.example/rsa/fullchain.cer" ]]
+[[ "$(wc -l < "$CASE_DIR/calls")" -eq 1 ]]
+
+echo "Test 6: 429 rate limit stops another algorithm for that domain in the same run"
+new_case "rate-limit"
+printf 'limited.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
+RATE_LIMIT_DOMAIN=limited.example run_case
+assert_output "had_failures=true"
+assert_output "failed_domains=limited.example/EC"
+[[ "$(wc -l < "$CASE_DIR/calls")" -eq 1 ]]
 
 echo "All offline SSL renewal regression tests passed."
