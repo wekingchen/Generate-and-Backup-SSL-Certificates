@@ -7,6 +7,13 @@ concurrency:
 on:
   # 生产定时任务暂停，须完成受控验收后单独恢复。
   workflow_dispatch:
+  # 临时单次触发，用于验证本工作流在 main 上的报表提交。
+  push:
+    branches: [main]
+    paths: [.github/workflows/check_ssl_expiry.yml]
+
+permissions:
+  contents: write
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
@@ -121,12 +128,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$critical" -gt 0 ]; then exit 1; fi
-
-      - name: Push updated CHECK_LIST.md to repository
-        if: ${{ success() }}
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup
         if: ${{ always() }}
