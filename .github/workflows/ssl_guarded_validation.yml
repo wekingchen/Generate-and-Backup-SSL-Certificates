@@ -1,0 +1,143 @@
+name: SSL Guarded Readonly and Staging
+on:
+  push:
+    branches: [fix/ssl-renewal-reliability-20261016]
+    paths: [.github/workflows/ssl_guarded_validation.yml]
+permissions:
+  contents: read
+jobs:
+  read-only:
+    name: Read existing Dropbox certificates (no remote writes)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Install rclone
+        run: |
+          set -euo pipefail
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+      - name: Configure temporary Dropbox connection
+        env:
+          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          set -euo pipefail
+          test -n "$RCLONE_CONFIG"
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+      - name: Read using existing rclone commands (local destination only)
+        env:
+          DROPBOX_PATH: SSL
+          RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
+        run: |
+          set -euo pipefail
+          rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_readonly.log
+          rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./ --log-file=rclone_list.log
+      - name: Validate domain list, certificate and private key compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s cloudflare_domains_list.txt
+          test -d ssl
+          if grep -Eiq '^sqqq\.cf\r?$' cloudflare_domains_list.txt; then
+            echo "::error::sqqq.cf 仍在远端域名列表中"
+            exit 1
+          fi
+          echo "### Dropbox 只读证书状态" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 域名 | 算法 | 到期时间 UTC | 剩余天数 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          count=0
+          bad=0
+          staging_domain_found=0
+          while IFS= read -r domain || [[ -n "$domain" ]]; do
+            domain=$(printf '%s' "$domain" | tr -d '\r')
+            [[ -z "$domain" || "$domain" == \#* ]] && continue
+            if [[ "$domain" == "fgw2world.shop" ]]; then staging_domain_found=1; fi
+            if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$ ]]; then
+              echo "::error::域名列表含有非法条目"
+              bad=$((bad+1))
+              continue
+            fi
+            for type in EC RSA; do
+              dir="./ssl/$domain"
+              [[ "$type" == RSA ]] && dir="$dir/rsa"
+              cert="$dir/fullchain.cer"
+              key="$dir/private.key"
+              count=$((count+1))
+              if [[ ! -s "$cert" || ! -s "$key" ]]; then
+                echo "::error::$domain $type 缺少证书或私钥"
+                bad=$((bad+1))
+                continue
+              fi
+              if ! openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1 ||
+                 ! openssl x509 -in "$cert" -noout -checkhost "$domain" >/dev/null 2>&1 ||
+                 ! openssl x509 -in "$cert" -noout -checkhost "test.$domain" >/dev/null 2>&1; then
+                echo "::error::$domain $type 证书无效、过期或缺少通配符"
+                bad=$((bad+1))
+                continue
+              fi
+              a=$(openssl x509 -in "$cert" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)
+              b=$(openssl pkey -in "$key" -pubout -outform DER | sha256sum | cut -d' ' -f1)
+              if [[ "$a" != "$b" ]]; then
+                echo "::error::$domain $type 私钥不匹配"
+                bad=$((bad+1))
+                continue
+              fi
+              expiry=$(openssl x509 -in "$cert" -noout -enddate | cut -d= -f2-)
+              expiration=$(date -u -d "$expiry" +%s)
+              now=$(date -u +%s)
+              days=$(((expiration-now)/86400))
+              echo "| $domain | $type | $expiry | $days |" >> "$GITHUB_STEP_SUMMARY"
+              echo "✔ $domain $type：剩余 $days 天"
+            done
+          done < cloudflare_domains_list.txt
+          if (( count == 0 || bad > 0 || staging_domain_found == 0 )); then
+            echo "::error::检查 $count 张证书，错误 $bad；Staging域名是否存在=$staging_domain_found"
+            exit 1
+          fi
+          echo "共 $count 张证书已完成只读核对" >> "$GITHUB_STEP_SUMMARY"
+      - name: Clean local copies
+        if: always()
+        run: |
+          rm -rf ./ssl ./cloudflare_domains_list.txt ~/.config/rclone
+          rm -f rclone_readonly.log rclone_list.log
+  staging-ec:
+    name: One-domain EC via Let's Encrypt Staging only
+    needs: read-only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CF_Token: ${{ secrets.CF_TOKEN }}
+      CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      EMAIL: ${{ secrets.EMAIL }}
+    steps:
+      - name: Install acme.sh with existing Cloudflare secret names
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CF_Token"
+          test -n "$CF_Account_ID"
+          test -n "$EMAIL"
+          curl -fsSL https://get.acme.sh | sh -s email="$EMAIL"
+          test -f "$HOME/.acme.sh/acme.sh"
+      - name: Staging DNS-01 validation (no production issuance, no Dropbox access)
+        shell: bash
+        run: |
+          set -euo pipefail
+          domain="fgw2world.shop"
+          "$HOME/.acme.sh/acme.sh" --register-account --server letsencrypt_test -m "$EMAIL"
+          "$HOME/.acme.sh/acme.sh" --issue --force --server letsencrypt_test \
+            --dns dns_cf -d "$domain" -d "*.$domain" --keylength ec-256 --dnssleep 60
+          cert="$HOME/.acme.sh/${domain}_ecc/fullchain.cer"
+          key="$HOME/.acme.sh/${domain}_ecc/$domain.key"
+          test -s "$cert"
+          test -s "$key"
+          openssl x509 -in "$cert" -noout -checkhost "$domain"
+          openssl x509 -in "$cert" -noout -checkhost "test.$domain"
+          a=$(openssl x509 -in "$cert" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)
+          b=$(openssl pkey -in "$key" -pubout -outform DER | sha256sum | cut -d' ' -f1)
+          [[ "$a" == "$b" ]]
+          echo "### Let's Encrypt Staging 测试通过" >> "$GITHUB_STEP_SUMMARY"
+          echo "fgw2world.shop：EC P-256，未进行生产签发或 Dropbox 写入" >> "$GITHUB_STEP_SUMMARY"
+      - name: Clean local test certificates
+        if: always()
+        run: rm -rf ~/.acme.sh
