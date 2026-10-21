@@ -16,7 +16,6 @@ jobs:
       EMAIL: ${{ secrets.EMAIL }}
       CF_Token: ${{ secrets.CF_TOKEN }}
       CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
-      RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
       ACME_PATH: /home/runner/.acme.sh/acme.sh
       DAYS_BEFORE_EXPIRY: "30"
       SSL_ONLY_DOMAIN: gordon.run
@@ -38,6 +37,8 @@ jobs:
           curl -fsSL https://get.acme.sh | sh -s email="$EMAIL"
           test -f "$ACME_PATH"
       - name: Configure rclone without printing credentials
+        env:
+          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
         shell: bash
         run: |
           set -euo pipefail
