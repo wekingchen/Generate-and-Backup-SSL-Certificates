@@ -15,6 +15,7 @@ env:
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
   DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
+  SSL_MAX_ISSUES_PER_RUN: 2
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
 jobs:
@@ -69,6 +70,18 @@ jobs:
             exit 1
           fi
           echo "✔ 已验证 $count 张证书及对应私钥。"
+
+      - name: Guard remote Dropbox files against accidental deletion
+        run: |
+          set -eo pipefail
+          rclone lsf dropbox:$DROPBOX_PATH -R --files-only | LC_ALL=C sort > /tmp/ssl_remote_files
+          (cd ssl && find . -type f -printf '%P\n' | LC_ALL=C sort) > /tmp/ssl_local_files
+          comm -23 /tmp/ssl_remote_files /tmp/ssl_local_files > /tmp/ssl_would_delete
+          if [ -s /tmp/ssl_would_delete ]; then
+            echo "::error::Dropbox 中有本地缺少的文件，已阻止可能造成远端删除的同步。"
+            echo "待保护文件数：$(wc -l < /tmp/ssl_would_delete)"
+            exit 1
+          fi
 
       - name: Backup certificates to Dropbox
         id: backup
