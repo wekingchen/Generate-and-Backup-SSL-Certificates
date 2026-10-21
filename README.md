@@ -4,6 +4,9 @@
 
 ## 两条工作流
 
+> **临时暂停说明（2026-10-21）**：两条生产工作流的定时触发暂未恢复，仅保留手动运行入口；下表的 UTC 时间是计划恢复后的原定时间。离线与 Staging 测试完成、完成受控生产验证后，才单独恢复定时执行。
+
+
 | 工作流 | 作用 | 定时（UTC） |
 | --- | --- | --- |
 | [Generate and Backup SSL Certificates](.github/workflows/generate_and_backup_ssl.yml) | 读取现有证书，必要时续签、校验、备份到 Dropbox，并通过 Bark 汇报 | 每天 23:35 |
