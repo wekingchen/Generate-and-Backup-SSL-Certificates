@@ -10,6 +10,13 @@ fi
 updated_domains=""
 failed_domains=""
 processed=0
+attempts=0
+deferred_certificates=""
+max_attempts="${SSL_MAX_ISSUES_PER_RUN:-0}"
+if [[ ! "$max_attempts" =~ ^[0-9]+$ ]]; then
+  echo "::error::单次签发次数上限必须是非负整数。"
+  exit 1
+fi
 
 # 仅受控生产验收使用；正常定时任务不设置这两个变量。
 only_domain="${SSL_ONLY_DOMAIN:-}"
@@ -60,7 +67,42 @@ issue_one() {
   fi
 
   mkdir -p "$dest" || return 1
-  echo "→ 生成 $domain 的 $type 证书…"
+
+  # 只使用既有 issue 日志进行跨运行 429 冷却；不新增 Dropbox 文件结构。
+  if [[ -s "$logf" ]] &&
+     grep -Eiq '429|rate.?limit|too many certificates|Retry-After' "$logf"; then
+    local now_ts retry_text retry_ts log_ts fallback_until
+    now_ts=$(date -u +%s)
+    retry_text=$(grep -Eoi 'retry after[ :]+[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}( UTC|Z)?' "$logf" | tail -n 1 | sed -E 's/^[^0-9]*//' || true)
+    retry_ts=0
+    if [[ -n "$retry_text" ]]; then
+      retry_ts=$(date -u -d "$retry_text" +%s 2>/dev/null || echo 0)
+    fi
+    if ((retry_ts > now_ts)); then
+      echo "— $domain $type 处于 CA 限额冷却期，允许重试时间：$retry_text；跳过。"
+      deferred_certificates="$deferred_certificates $domain/$type"
+      return 0
+    fi
+    # 没有可解析 Retry-After 时，以日志原始修改时间为依据退避 34 小时。
+    if ((retry_ts == 0)); then
+      log_ts=$(stat -c %Y "$logf" 2>/dev/null || echo 0)
+      fallback_until=$((log_ts + 34 * 3600))
+      if ((fallback_until > now_ts)); then
+        echo "— $domain $type 曾触发 429，暂缓至 $(date -u -d "@$fallback_until" +'%Y-%m-%d %H:%M UTC')。"
+        deferred_certificates="$deferred_certificates $domain/$type"
+        return 0
+      fi
+    fi
+  fi
+
+  if ((max_attempts > 0 && attempts >= max_attempts)); then
+    echo "— $domain $type 达到每轮 $max_attempts 次签发上限，本轮跳过。"
+    deferred_certificates="$deferred_certificates $domain/$type"
+    return 0
+  fi
+
+  attempts=$((attempts + 1))
+  echo "→ 生成 $domain 的 $type 证书…（本轮第 $attempts 次）"
   if ! "$ACME_PATH" --issue --force --server letsencrypt --dns dns_cf \
     -d "$domain" -d "*.$domain" --keylength "$keylength" >"$logf" 2>&1; then
     echo "::error:: $domain $type 签发失败（日志末尾）："
@@ -135,8 +177,9 @@ fi
 # 每个域名分别记录失败，不中止其他域名；备份之后由工作流统一返回失败状态。
 updated_domains=$(printf '%s\n' $updated_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
 failed_domains=$(printf '%s\n' $failed_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
+deferred_certificates=$(printf '%s\n' $deferred_certificates | sed '/^$/d' | sort -u | paste -sd ',' -)
 if [[ -n "$GITHUB_OUTPUT" ]]; then
-  printf 'updated_domains=%s\nfailed_domains=%s\n' "$updated_domains" "$failed_domains" >> "$GITHUB_OUTPUT"
+  printf 'updated_domains=%s\nfailed_domains=%s\ndeferred_certificates=%s\n' "$updated_domains" "$failed_domains" "$deferred_certificates" >> "$GITHUB_OUTPUT"
   if [[ -n "$failed_domains" ]]; then echo 'had_failures=true' >> "$GITHUB_OUTPUT"; else echo 'had_failures=false' >> "$GITHUB_OUTPUT"; fi
 fi
 
@@ -145,6 +188,8 @@ fi
   echo ""
   echo "- 已更新域名：$updated_domains"
   echo "- 签发失败：$failed_domains"
+  echo "- 限额冷却或分批延期：$deferred_certificates"
+  echo "- 本轮发起的 CA 签发请求：$attempts"
   echo "- 说明：仅在后续校验、Dropbox 备份成功后，才视为本轮处理完成。"
 } >> "$GITHUB_STEP_SUMMARY"
 
