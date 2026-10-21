@@ -11,6 +11,18 @@ updated_domains=""
 failed_domains=""
 processed=0
 
+# 仅受控生产验收使用；正常定时任务不设置这两个变量。
+only_domain="${SSL_ONLY_DOMAIN:-}"
+only_type="${SSL_ONLY_TYPE:-}"
+if [[ -n "$only_domain" && ! "$only_domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$ ]]; then
+  echo "::error::受控验证指定了非法域名。"
+  exit 1
+fi
+if [[ -n "$only_type" && "$only_type" != EC && "$only_type" != RSA ]]; then
+  echo "::error::受控验证指定了非法证书算法。"
+  exit 1
+fi
+
 certificate_usable() {
   local cert="$1" key="$2" domain="$3" threshold="$4"
   local cert_pub key_pub
@@ -90,6 +102,7 @@ issue_one() {
 while IFS= read -r domain || [[ -n "$domain" ]]; do
   domain=$(printf '%s' "$domain" | tr -d '\r')
   [[ -z "$domain" || "$domain" == \#* ]] && continue
+  [[ -n "$only_domain" && "$domain" != "$only_domain" ]] && continue
   processed=$((processed + 1))
 
   if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$ ]]; then
@@ -99,8 +112,17 @@ while IFS= read -r domain || [[ -n "$domain" ]]; do
   fi
 
   for type in EC RSA; do
+    [[ -n "$only_type" && "$type" != "$only_type" ]] && continue
     if ! issue_one "$domain" "$type"; then
       failed_domains="$failed_domains $domain/$type"
+      logdir="./ssl/$domain"
+      [[ "$type" == RSA ]] && logdir="$logdir/rsa"
+      # 同一组域名若已经遭遇 429，另一算法在本轮不再重复消耗申请请求。
+      if [[ -f "$logdir/${type}_issue.log" ]] &&
+         grep -Eiq '429|rate.?limit|too many certificates|Retry-After' "$logdir/${type}_issue.log"; then
+        echo "::warning::$domain 命中签发限额，本次跳过该域名后续算法。"
+        break
+      fi
     fi
   done
 done < cloudflare_domains_list.txt
