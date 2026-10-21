@@ -54,7 +54,7 @@ jobs:
           NOW=$(TZ=Asia/Shanghai date +"%Y年%m月%d日 %H:%M:%S")
           echo "## SSL 证书状态（检查时间：$NOW，北京时间 UTC+8）" > CHECK_LIST.md
           echo "| 域名 | EC 到期时间 | EC 剩余天数 | RSA 到期时间 | RSA 剩余天数 |" >> CHECK_LIST.md
-          echo "|--------|-----------|-------------|------------|--------------|" >> CHECK_LIST.md
+          echo "|---|---|---:|---|---:|" >> CHECK_LIST.md
 
           check_cert() {
             cert="$1/fullchain.cer"
