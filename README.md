@@ -1,281 +1,71 @@
----
-# 使用 GitHub Actions 自动生成、更新和备份 SSL 证书
+# 使用 GitHub Actions 自动生成和备份 SSL 证书
 
-## 前言
+本仓库通过 GitHub Actions、[acme.sh](https://github.com/acmesh-official/acme.sh)、Cloudflare DNS 和 Dropbox 管理 Let's Encrypt 证书，继续支持 **ECC (EC P-256)** 与 **RSA 2048** 两种格式。
 
-本教程演示如何使用 GitHub Actions 自动化：
+## 两条工作流
 
-- 定期生成（或续期）SSL 证书（ECC + RSA）
-- 在证书有效期低于阈值时自动更新
-- 将证书和配置备份到 Dropbox
-- 生成证书状态报表并在仓库中提交并推送
-- 触发 Bark 通知（可选）
+> **临时暂停说明（2026-10-21）**：两条生产工作流的定时触发暂未恢复，仅保留手动运行入口；下表的 UTC 时间是计划恢复后的原定时间。离线与 Staging 测试完成、完成受控生产验证后，才单独恢复定时执行。
 
-这样就能确保域名始终拥有有效证书，并且一旦证书快到期，就自动续签与备份。
 
-## 前提条件
+| 工作流 | 作用 | 定时（UTC） |
+| --- | --- | --- |
+| [Generate and Backup SSL Certificates](.github/workflows/generate_and_backup_ssl.yml) | 读取现有证书，必要时续签、校验、备份到 Dropbox，并通过 Bark 汇报 | 每天 23:35 |
+| [Check SSL Certificate Expiry](.github/workflows/check_ssl_expiry.yml) | 只读取 Dropbox 中的证书、更新仓库的 `CHECK_LIST.md`，报告临期和异常，不再重复签发或回写证书 | 每天 01:00 |
 
-1. 拥有 GitHub 账号，并创建了目标仓库。
-2. 在 Cloudflare 上管理域名，并获取 **API Token** (`CF_TOKEN`) 及 **Account ID** (`CF_ACCOUNT_ID`)。
-3. 在 Dropbox 上创建 App，并生成 **API Token**，用于 `rclone`。
-4. (可选) 已在设备或手机上安装并配置 Bark，用于接收推送通知。
+> GitHub 的定时工作流可能延迟执行。两条工作流使用同一并发组，避免同时操作证书。
 
-## 步骤一：配置 GitHub 仓库
+## Dropbox 读取、写入和输出格式（保持兼容）
 
-1. 创建仓库或在现有仓库中操作。建议使用私有仓库以保护配置。
-2. 在仓库 **Settings → Secrets and variables → Actions** 中添加以下 Secrets：
-   - `EMAIL`：注册 acme.sh 时使用的邮箱。
-   - `CF_TOKEN`：Cloudflare API Token。
-   - `CF_ACCOUNT_ID`：Cloudflare 账户 ID。
-   - `RCLONE_CONFIG`：完整的 `rclone` 配置内容。
-   - `BARK_URL`：Bark 推送地址（可选）。
-   - `GITHUB_TOKEN`：GitHub 自动生成的推送令牌。
-   - `CLI_TOKEN`：用于 GH CLI 更新 `RCLONE_CONFIG`（可选）。
+现有的 `rclone` 连接名仍为 `dropbox`，根路径仍为 `dropbox:SSL`：
 
-## 步骤二：创建并优化工作流
+- 从 `dropbox:SSL` 同步证书到工作目录 `./ssl`。
+- 从 `dropbox:SSL/cloudflare_domains_list.txt` 单独读取域名列表，每行一个域名。
+- 证书管理工作流完成签发和校验后，仍使用原来的 `rclone sync ssl dropbox:SSL` 回写证书。
+- 仍将 rclone 配置备份到 `dropbox:SSL/rclone-config`，并在有相应权限时更新 `RCLONE_CONFIG` Secret。
+- 到期检查工作流只读取 Dropbox；它不再重复上传未修改的证书目录，避免两个独立流程竞争写入。
 
-### 1. 生成并备份 SSL 证书（`generate_and_backup_ssl.yml`）
+证书路径保持不变：
 
-```yaml
-name: Generate and Backup SSL Certificates
-on:
-  schedule:
-    - cron: "35 23 * * *"
-  workflow_dispatch:
+| 类型 | 完整证书链 | 私钥 | CA（如果提供） |
+| --- | --- | --- | --- |
+| ECC | `SSL/<域名>/fullchain.cer` | `SSL/<域名>/private.key` | `SSL/<域名>/ca.cer` |
+| RSA | `SSL/<域名>/rsa/fullchain.cer` | `SSL/<域名>/rsa/private.key` | `SSL/<域名>/rsa/ca.cer` |
 
-env:
-  EMAIL: ${{ secrets.EMAIL }}
-  CF_TOKEN: ${{ secrets.CF_TOKEN }}
-  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-  RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "SSL"
-  DAYS_BEFORE_EXPIRY: 30
-  ACME_PATH: "/home/runner/.acme.sh/acme.sh"
+原有 `EC_issue.log`、`RSA_issue.log` 文件命名不变。不会自动删除已从域名列表移除的历史备份。
 
-jobs:
-  generate-and-backup:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+`CHECK_LIST.md` 仍采用原来的五列表格：域名、EC 到期时间、EC 剩余天数、RSA 到期时间、RSA 剩余天数。不会改变表格列名和排列顺序。
 
-      - name: 安装 rclone 与 acme.sh
-        run: |
-          curl https://rclone.org/install.sh | sudo bash
-          curl https://get.acme.sh | sh -s email=$EMAIL
+## 配置
 
-      - name: 配置 rclone
-        env:
-          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
-        run: |
-          mkdir -p ~/.config/rclone
-          echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
+在仓库 **Settings → Secrets and variables → Actions** 中配置：
 
-      - name: 同步证书与域名列表
-        run: |
-          set -eo pipefail
-          rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log
-          rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./
+| Secret | 用途 |
+| --- | --- |
+| `EMAIL` | acme.sh 注册邮箱和报表提交身份 |
+| `CF_TOKEN`、`CF_ACCOUNT_ID` | Cloudflare DNS-01 验证 |
+| `RCLONE_CONFIG` | Dropbox 的完整 rclone 配置 |
+| `CLI_TOKEN` | 使用 GitHub CLI 更新 `RCLONE_CONFIG` Secret |
+| `BARK_URL` | 可选，Bark 推送地址 |
 
-      - name: 生成（或续期）SSL 证书
-        env:
-          CF_TOKEN: ${{ secrets.CF_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        run: |
-          set -eo pipefail
+不要把私钥、rclone 配置、Cloudflare Token 或 Dropbox Token 提交到公开仓库。`GITHUB_TOKEN` 由 Actions 自动提供，不应手动创建同名 Secret。
 
-          # 检查证书有效期
-          check_validity() {
-            cert=$1; [ -f "$cert" ] || return 1
-            if openssl x509 -checkend $((DAYS_BEFORE_EXPIRY*86400)) -noout -in "$cert"; then
-              return 0
-            else
-              return 1
-            fi
-          }
+## 证书生命周期与异常处理
 
-          # 签发与安装函数
-          issue_install() {
-            domain=$1; type=$2; src="$HOME/.acme.sh/$domain$([ "$type" = "EC" ] && echo "_ecc")"
-            dest="./ssl/$domain$([ "$type" = "RSA" ] && echo "/rsa")"
-            mkdir -p "$dest"
-            certf="$dest/fullchain.cer"; keyf="$dest/private.key"
-            updated=0
+- 只有当证书无效、缺失，或者距离到期不足续签阈值（目前为 30 天）时才申请新证书。
+- 检查证书和私钥是否匹配、证书是否覆盖根域名与通配符域名、有效期是否足够。
+- 每个域名、每种算法单独处理。一个失败时继续处理其他证书；有效的现有证书不得被失败的候选文件替换。
+- 即使个别域名失败，也先完成已经校验成功的证书备份，最后才将工作流标记为失败。
+- 域名列表为空、证书目录异常或总体验证失败时，拒绝回写 Dropbox，防止误覆盖。
+- 触发 Let's Encrypt 429 时，以日志中的 `retry after` 为准，不应立即手动反复重跑。当前版本不额外改动 Dropbox 数据结构来保存持久冷却状态。
+- 到期检查任务不负责续签；剩余 30 天内显示警告，证书缺失或仅剩 7 天及以下显示严重异常。
 
-            if ! check_validity "$certf"; then
-              echo "→ 生成 $domain 的 $type..."
-              $ACME_PATH --issue --force --dns dns_cf -d "$domain" -d "*.$domain" \
-                --keylength $([ "$type" = "RSA" ] && echo 2048 || echo ec-256) >/dev/null 2>&1
-              if [ -f "$src/fullchain.cer" ]; then
-                cp "$src/fullchain.cer" "$certf"; cp "$src/${domain}.key" "$keyf"
-                updated=1; echo "✔ $domain $type 已安装"
-              else
-                echo "✘ 未找到 $domain $type，跳过"
-              fi
-            else
-              echo "— $domain 的 $type 仍有效"
-            fi
+工作流中的证书状态、失败原因和总结尽量使用中文；acme.sh 的底层错误只在必要时展示末尾上下文。
 
-            [ $updated -eq 1 ] && echo $domain
-          }
+## 验证与恢复运行
 
-          # 批量处理
-          domains=""
-          while read -r d; do
-            domains+=" $(issue_install "$d" EC)"
-            domains+=" $(issue_install "$d" RSA)"
-          done < cloudflare_domains_list.txt
+1. 在独立分支静态验证 YAML 与 Shell 脚本，不通过生产 ACME 接口测试异常路径。
+2. 确认 Dropbox 路径、文件名和 `CHECK_LIST.md` 格式与现有数据兼容。
+3. 在限额恢复后，选择受控的生产验证窗口，先确认当前旧证书仍可用。
+4. 验证签发、证书和私钥匹配、Dropbox 回写、健康检查报表与 Bark 通知，再恢复每日定时执行。
 
-          # 发送 Bark 通知
-          domains=$(echo "$domains" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-          if [ -n "$domains" ]; then
-            body="以下域名已更新： $domains"
-            curl -s -X POST "${{ secrets.BARK_URL }}/SSL%20Updated/$(echo $body|sed 's/ /%20/g')"
-          fi
-
-      - name: 验证证书
-        run: |
-          find ./ssl -name fullchain.cer | xargs -n1 openssl x509 -noout -text
-
-      - name: 备份到 Dropbox
-        run: |
-          rclone sync ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS --log-file=rclone_backup.log
-
-      - name: 清理工作目录
-        run: rm -rf ssl cloudflare_domains_list.txt
-
-      - name: 更新 RCLONE_CONFIG Secret
-        env:
-          CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
-        run: |
-          echo "${CLI_TOKEN}" | gh auth login --with-token
-          gh secret set RCLONE_CONFIG -b"$(cat ~/.config/rclone/rclone.conf)"
-```
-
-**改动亮点**：
-- 全局 `set -eo pipefail`，任一步骤出错即终止。
-- 统一用 `fullchain.cer`、`private.key` 命名。
-- 发证与安装合并在一个函数中，返回更新的域名列表。
-- 简化输出与通知逻辑。
-
-### 2. 检查并更新过期证书（`check_ssl_expiry.yml`）
-
-```yaml
-name: Check SSL Certificate Expiry and Update Certificates
-on:
-  schedule:
-    - cron: "0 1 * * *"
-  workflow_dispatch:
-
-env:
-  EMAIL: ${{ secrets.EMAIL }}
-  CF_TOKEN: ${{ secrets.CF_TOKEN }}
-  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-  RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
-  DROPBOX_PATH: "SSL"
-  DAYS_BEFORE_EXPIRY: 30
-  ACME_PATH: "/home/runner/.acme.sh/acme.sh"
-
-jobs:
-  check-and-update:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: 安装工具
-        run: |
-          curl https://rclone.org/install.sh | sudo bash
-          curl https://get.acme.sh | sh -s email=$EMAIL
-
-      - name: 配置 rclone
-        env:
-          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
-        run: |
-          mkdir -p ~/.config/rclone
-          echo "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
-
-      - name: 同步证书与域名
-        run: |
-          set -eo pipefail
-          rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS
-          rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./
-
-      - name: 生成 CHECK_LIST.md 并续期
-        run: |
-          set -eo pipefail
-          git config --global user.email "$EMAIL"
-          git config --global user.name "acme-bot"
-
-          NOW=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          echo "## Certificate Status (Checked at $NOW)" > CHECK_LIST.md
-          echo "|Domain|EC到期|剩余天数|RSA到期|剩余天数|" >> CHECK_LIST.md
-          echo "|-----|-----|--------|-----|--------|" >> CHECK_LIST.md
-
-          trigger=false
-          expire_list=""
-
-          check() {
-            f="$1/fullchain.cer"
-            [ -f "$f" ] || { echo "NOTFOUND|0"; return; }
-            d=$(openssl x509 -enddate -noout -in "$f" | cut -d= -f2)
-            t=$(date -d "$d" +%s)
-            n=$(date +%s)
-            days=$(( (t-n)/86400 ))
-            echo "$d|$days"
-          }
-
-          renew() {
-            dom=$1; typ=$2
-            dir="./ssl/$dom"; [ "$typ" = "RSA" ] && dir+="/rsa"
-            f="$dir/fullchain.cer"; k="$dir/private.key"
-            if ! openssl x509 -checkend $((DAYS_BEFORE_EXPIRY*86400)) -noout -in "$f"; then
-              echo "→ 续期 $dom($typ)..."
-              if [ "$typ" = "EC" ]; then
-                $ACME_PATH --issue --force --dns dns_cf --ecc -d "$dom" -d "*.$dom"
-                $ACME_PATH --installcert --ecc -d "$dom" --key-file "$k" --fullchain-file "$f"
-              else
-                $ACME_PATH --issue --force --dns dns_cf -d "$dom" -d "*.$dom" --keylength 2048
-                $ACME_PATH --installcert -d "$dom" --key-file "$k" --fullchain-file "$f"
-              fi
-              trigger=true; expire_list+=" $dom"
-            fi
-          }
-
-          while read -r d; do
-            { IFS='|' read ecd ecdays <<< "$(check "./ssl/$d")"; \
-              IFS='|' read rsad rsadays <<< "$(check "./ssl/$d/rsa")"; \
-              printf "|%s|%s|%s|%s|%s|\n" "$d" "$ecd" "$ecdays" "$rsad" "$rsadays" >> CHECK_LIST.md; \
-              if [ "$ecdays" -lt "$DAYS_BEFORE_EXPIRY" ] || [ "$rsadays" -lt "$DAYS_BEFORE_EXPIRY" ]; then
-                renew "$d" EC; renew "$d" RSA;
-              fi; } &
-          done < cloudflare_domains_list.txt
-          wait
-
-          if ! git diff --quiet CHECK_LIST.md; then
-            git add CHECK_LIST.md; git commit -m "Update CHECK_LIST.md at $NOW"; git push
-          fi
-
-          if [ "$trigger" = true ]; then
-            curl -s -X POST "${{ secrets.BARK_URL }}/SSL%20Updated/$(echo $expire_list|sed 's/ /%20/g')"
-          fi
-
-      - uses: ad-m/github-push-action@master
-        if: ${{ success() }}
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 备份到 Dropbox
-        run: |
-          rclone sync ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS
-
-      - name: 清理文件
-        run: rm -rf ssl cloudflare_domains_list.txt
-```
-
-## 步骤三：运行与验证
-
-1. 在仓库根目录创建 `cloudflare_domains_list.txt`，每行一个域名。
-2. 手动触发两条 Workflow，观察日志与 Dropbox 备份情况。
-3. 检查 `CHECK_LIST.md` 提交历史与 Bark 通知是否正确。
-
----
-
+如需删除某个域名的 Dropbox 历史证书，请先确认相关服务不再使用；更改域名列表本身不会自动清理历史备份。

@@ -1,7 +1,11 @@
 name: Generate and Backup SSL Certificates
 
+concurrency:
+  group: ssl-certificates-${{ github.repository }}
+  cancel-in-progress: false
+
 on:
-  # 临时暂停定时任务：待签发限额恢复并通过修复验证后再启用。
+  # 生产定时任务暂停，须完成受控验收后单独恢复。
   workflow_dispatch:
 
 env:
@@ -39,100 +43,81 @@ jobs:
           rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./
 
       - name: Generate SSL Certificates if needed
+        id: renew
         env:
           CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        run: |
-          set -eo pipefail
-
-          check_certificate_validity() {
-            cert=$1
-            [ -f "$cert" ] || return 1
-            exp=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
-            exp_ts=$(date -d "$exp" +%s)
-            now_ts=$(date +%s)
-            [ $(( (exp_ts - now_ts)/86400 )) -gt $DAYS_BEFORE_EXPIRY ]
-          }
-
-          issue_and_install_certificate() {
-            domain=$1; type=$2
-            updated=0
-            src="$HOME/.acme.sh/${domain}$([ "$type" = "EC" ] && echo "_ecc" || echo "")"
-            dest="./ssl/$domain$([ "$type" = "RSA" ] && echo "/rsa" || echo "")"
-            mkdir -p "$dest"
-            certf="$dest/fullchain.cer"
-            keyf="$dest/private.key"
-            logf="$dest/${type}_issue.log"
-
-            if ! check_certificate_validity "$certf"; then
-              echo "→ 生成 $domain 的 $type 证书…"
-              if ! $ACME_PATH --issue --force --server letsencrypt --dns dns_cf -d "$domain" -d "*.$domain" \
-                --keylength $([ "$type" = "RSA" ] && echo 2048 || echo ec-256) >"$logf" 2>&1; then
-                echo "✘ $type 签发失败，请查看日志："
-                cat "$logf"
-                return 1
-              fi
-
-              if [ -f "$src/fullchain.cer" ] && [ -f "$src/${domain}.key" ]; then
-                cp "$src/fullchain.cer" "$certf"
-                cp "$src/${domain}.key" "$keyf"
-              elif [ -f "$src/${domain}.cer" ] && [ -f "$src/${domain}.key" ]; then
-                cp "$src/${domain}.cer" "$certf"
-                cp "$src/${domain}.key" "$keyf"
-              else
-                echo "✘ 未在 $src 中找到 $type 证书，目录内容如下："
-                ls -al "$src"
-                return 1
-              fi
-
-              [ -f "$src/ca.cer" ] && cp "$src/ca.cer" "$dest/ca.cer"
-              echo "✔ 已安装 $domain 的 $type 证书。"
-              updated=1
-            else
-              echo "— $domain 的 $type 证书仍然有效，跳过。"
-            fi
-
-            if [ $updated -eq 1 ]; then
-              domains="$domains $domain"
-            fi
-          }
-
-          domains=""
-          while IFS= read -r domain || [ -n "$domain" ]; do
-            issue_and_install_certificate "$domain" EC
-            issue_and_install_certificate "$domain" RSA
-          done < cloudflare_domains_list.txt
-
-          if [ -n "$domains" ]; then
-            uniq=$(echo $domains | tr ' ' '\n' | sort -u | tr '\n' ' ')
-            body="以下域名已更新证书：\n$uniq"
-            url="${{ secrets.BARK_URL }}"
-            ENCODED=$(echo "$body" | sed 's/ /%20/g; s/\\n/%0A/g')
-            curl -X POST "$url/SSL%20Updated/$ENCODED"
-          else
-            echo "无证书更新，且不会发送通知。"
-          fi
+        run: bash .github/scripts/renew_certificates.sh
 
       - name: Validate new certificates
         run: |
-          find ./ssl -name "fullchain.cer" -print0 \
-            | xargs -0 -n1 -I{} openssl x509 -in {} -noout -text
+          set -eo pipefail
+          count=0
+          while IFS= read -r -d '' cert; do
+            key="$(dirname "$cert")/private.key"
+            test -s "$key"
+            openssl x509 -in "$cert" -noout -checkend 0 >/dev/null
+            cert_pub=$(openssl x509 -in "$cert" -pubkey -noout |
+              openssl pkey -pubin -outform DER | sha256sum | cut -d ' ' -f1)
+            key_pub=$(openssl pkey -in "$key" -pubout -outform DER |
+              sha256sum | cut -d ' ' -f1)
+            test "$cert_pub" = "$key_pub"
+            count=$((count + 1))
+          done < <(find ./ssl -name "fullchain.cer" -print0)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::未找到任何有效证书，拒绝备份。"
+            exit 1
+          fi
+          echo "✔ 已验证 $count 张证书及对应私钥。"
 
       - name: Backup certificates to Dropbox
+        id: backup
         run: |
           rclone sync ssl dropbox:$DROPBOX_PATH $RCLONE_PARAMS
 
       - name: Backup rclone config
+        id: config_backup
         run: |
           rclone copy ~/.config/rclone dropbox:$DROPBOX_PATH/rclone-config $RCLONE_PARAMS
 
       - name: Cleanup
+        if: ${{ always() }}
         run: |
           rm -rf ssl cloudflare_domains_list.txt
 
       - name: Update RCLONE_CONFIG secret
+        id: secret_update
         env:
           CLI_TOKEN: ${{ secrets.CLI_TOKEN }}
         run: |
           echo "${CLI_TOKEN}" | gh auth login --with-token
           gh secret set RCLONE_CONFIG -b"$(cat ~/.config/rclone/rclone.conf)"
+
+      - name: Notify certificate result
+        if: ${{ always() && steps.renew.outcome == 'success' && steps.backup.outcome == 'success' }}
+        env:
+          BARK_URL: ${{ secrets.BARK_URL }}
+          UPDATED_DOMAINS: ${{ steps.renew.outputs.updated_domains }}
+          FAILED_DOMAINS: ${{ steps.renew.outputs.failed_domains }}
+        run: |
+          if [ -z "$BARK_URL" ] || { [ -z "$UPDATED_DOMAINS" ] && [ -z "$FAILED_DOMAINS" ]; }; then
+            echo "无须发送 Bark 通知。"
+            exit 0
+          fi
+          body="已更新：$UPDATED_DOMAINS；失败：$FAILED_DOMAINS"
+          encoded=$(jq -rn --arg body "$body" '$body|@uri')
+          curl -fsS --max-time 15 -X POST "$BARK_URL/SSL%20Updated/$encoded" ||
+            echo "::warning::Bark 通知失败，不影响证书备份结果。"
+
+      - name: Report final result
+        if: ${{ always() }}
+        run: |
+          if [ "${{ steps.renew.outcome }}" != "success" ] ||
+             [ "${{ steps.backup.outcome }}" != "success" ] ||
+             [ "${{ steps.config_backup.outcome }}" != "success" ] ||
+             [ "${{ steps.secret_update.outcome }}" != "success" ] ||
+             [ "${{ steps.renew.outputs.had_failures }}" = "true" ]; then
+            echo "::error::存在证书签发、校验或备份失败，请查看上方中文汇总。"
+            exit 1
+          fi
+          echo "✔ 证书处理与 Dropbox 备份均已完成。"

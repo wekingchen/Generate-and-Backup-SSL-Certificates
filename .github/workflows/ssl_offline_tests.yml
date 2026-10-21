@@ -1,0 +1,29 @@
+name: Offline SSL Renewal Regression Tests
+
+on:
+  pull_request:
+    paths:
+      - ".github/scripts/**"
+      - ".github/tests/**"
+      - ".github/workflows/ssl_offline_tests.yml"
+      - ".github/workflows/generate_and_backup_ssl.yml"
+      - ".github/workflows/check_ssl_expiry.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pull request code
+        uses: actions/checkout@v4
+
+      - name: Syntax-check renewal shell
+        run: |
+          bash -n .github/scripts/renew_certificates.sh
+          bash -n .github/tests/test_renew_certificates.sh
+
+      - name: Run tests without ACME or Dropbox access
+        run: bash .github/tests/test_renew_certificates.sh
