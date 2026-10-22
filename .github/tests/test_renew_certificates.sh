@@ -255,4 +255,37 @@ assert_output "failed_domains=invalid-entry"
 [[ "$(wc -l < "$CASE_DIR/calls")" -eq 2 ]]
 grep -Fqx -- '- 动态最大检查项目数（域名数 × 2）：2' "$CASE_DIR/summary"
 
+echo "Test 13: stale CA file must not survive a successful replacement"
+new_case "stale-ca"
+make_pair stale.example EC "$CASE_DIR/work/ssl/stale.example" 1
+make_pair stale.example EC "$CASE_DIR/fixtures/stale.example/EC"
+echo "OLD CA MUST BE REMOVED" > "$CASE_DIR/work/ssl/stale.example/ca.cer"
+printf 'stale.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
+SSL_ONLY_TYPE=EC run_case
+assert_output "had_failures=false"
+[[ -s "$CASE_DIR/work/ssl/stale.example/fullchain.cer" ]]
+[[ ! -e "$CASE_DIR/work/ssl/stale.example/ca.cer" ]]
+
+echo "Test 14: failed private-key installation must roll back all previous files"
+new_case "install-rollback"
+make_pair rollback.example EC "$CASE_DIR/work/ssl/rollback.example" 1
+make_pair rollback.example EC "$CASE_DIR/fixtures/rollback.example/EC"
+echo "ORIGINAL CA FILE" > "$CASE_DIR/work/ssl/rollback.example/ca.cer"
+printf 'rollback.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
+old_cert=$(sha256sum "$CASE_DIR/work/ssl/rollback.example/fullchain.cer" | cut -d ' ' -f 1)
+old_key=$(sha256sum "$CASE_DIR/work/ssl/rollback.example/private.key" | cut -d ' ' -f 1)
+mkdir -p "$CASE_DIR/mock-bin"
+cat > "$CASE_DIR/mock-bin/mv" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in *"/new-private.key"*) exit 91 ;; esac
+exec /usr/bin/mv "$@"
+MOCK
+chmod +x "$CASE_DIR/mock-bin/mv"
+PATH="$CASE_DIR/mock-bin:$PATH" SSL_ONLY_TYPE=EC run_case
+assert_output "had_failures=true"
+[[ "$(sha256sum "$CASE_DIR/work/ssl/rollback.example/fullchain.cer" | cut -d ' ' -f 1)" == "$old_cert" ]]
+[[ "$(sha256sum "$CASE_DIR/work/ssl/rollback.example/private.key" | cut -d ' ' -f 1)" == "$old_key" ]]
+grep -Fxq "ORIGINAL CA FILE" "$CASE_DIR/work/ssl/rollback.example/ca.cer"
+[[ -z "$(find "$CASE_DIR/work/ssl/rollback.example" -name '.ssl-stage.*' -print -quit)" ]]
+
 echo "All offline SSL renewal regression tests passed."
