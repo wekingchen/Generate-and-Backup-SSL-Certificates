@@ -1,0 +1,41 @@
+name: 一次性清理 PR9 审计分支
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/cleanup_pr9_once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-pr9:
+    if: github.repository == 'wekingchen/Generate-and-Backup-SSL-Certificates' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 验证 PR9 合并后只删除其测试分支
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          merged=$(gh api "repos/$repo/pulls/9" --jq '.merged')
+          head=$(gh api "repos/$repo/pulls/9" --jq '.head.ref')
+          base=$(gh api "repos/$repo/pulls/9" --jq '.base.ref')
+          if [[ "$merged" != true || "$head" != fix/ssl-full-audit-hardening-20261022 || "$base" != main ]]; then
+            echo "::error::PR #9 合并状态或分支不匹配，拒绝清理。"
+            exit 1
+          fi
+          target="repos/$repo/git/refs/heads/fix/ssl-full-audit-hardening-20261022"
+          if gh api "$target" >/dev/null 2>&1; then
+            gh api --method DELETE "$target"
+            echo "✔ PR9 审计临时分支已删除。"
+          else
+            echo "✔ 临时分支已不存在，跳过。"
+          fi
+          gh api "repos/$repo/branches/main" --jq '.name' | grep -Fxq main
+          echo "✔ main 保持正常。"
