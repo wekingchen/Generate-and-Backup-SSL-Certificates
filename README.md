@@ -97,7 +97,7 @@
 ## 运行环境和凭证安全
 
 - 工作流在必要的步骤内注入 Cloudflare Token，不再将其放在工作流的全局环境；证书签发工作流默认使用 `contents: read` 权限。
-- rclone 由 Ubuntu 发行版签名软件包安装；acme.sh 锁定到 `3.1.6` 及提交 `807da6498377ee5e0cf43a78091f46f12dc59a89`，升级时需要重新测试再更新固定值。
+- rclone 从官方 Release 安装固定版本 `1.75.2`，使用 SHA-256 `349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702` 校验，避免退回发行版较旧的软件包；acme.sh 锁定 `3.1.6` 及提交 `807da6498377ee5e0cf43a78091f46f12dc59a89`。升级前均需检查官方发布来源并通过离线与依赖安装冒烟测试。
 - Google Public CA 的 EAB 绑定只用于手动试验；在 ACME 账户密钥能安全恢复之前，不能作为定时备用 CA。
 - 证书校验任务只负责检查与更新报表，不向 Dropbox 回写证书。报表若发现私钥、域名或可信链校验失败，会标记为「校验失败」，并按严重异常处理。
 
@@ -107,7 +107,7 @@
 - 2026-10-21：Let's Encrypt Staging DNS-01、单张正式 EC 证书、Dropbox 写回后回读均已通过验收。
 - 2026-10-22：主分支健康检查成功并更新 `CHECK_LIST.md`；ZeroSSL EC 通配符独立生产验收成功。
 - 每日自动续签持续启用；若部分证书失败，应先检查中文汇总、429 重试时间与 Dropbox 备份步骤，不要反复手动运行。
-- 修改续签脚本时，使用 [Offline SSL Renewal Regression Tests](.github/workflows/ssl_offline_tests.yml) 验证离线异常场景；除续签和 Bark 测试外，也会执行 `.github/tests/test_verify_inventory.sh`、`.github/tests/test_backup_guard.sh`、`.github/tests/test_workflow_contract.sh`，模拟证书链、三文件回滚、远端删除保护及校验 GitHub Actions YAML 和固定 Dropbox 路径。该测试不会调用真实 ACME、Bark 或 Dropbox。
+- 修改续签脚本时，使用 [Offline SSL Renewal Regression Tests](.github/workflows/ssl_offline_tests.yml) 验证离线异常场景；除续签和 Bark 测试外，也会执行 `.github/tests/test_verify_inventory.sh`、`.github/tests/test_backup_guard.sh`、`.github/tests/test_workflow_contract.sh`，模拟证书链、三文件回滚、远端删除保护及校验 GitHub Actions YAML 和固定 Dropbox 路径；另外使用无生产密钥的 CI 环境安装并验证固定版本的 rclone/acme.sh。测试不会调用真实 ACME 签发、Bark 或 Dropbox。
 
 域名列表由用户在 Dropbox 手动维护：新增或删除有效域名后，下次运行会自动识别新的去重数量。比如 6 个域名最多对应 12 个检查对象，增加为 10 个域名就最多对应 20 个检查对象；这不是保证每次都会申请 20 张，只有进入续签窗口的证书才申请。不同域名或算法失败仍按既有机制报告，成功证书仍经验证后备份。
 
