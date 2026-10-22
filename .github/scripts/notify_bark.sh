@@ -124,8 +124,7 @@ fi
 if [[ "$deferred_count" -gt 0 ]]; then
   [[ -z "$body" ]] || body+=$'\n\n'
   body+="⏳ 限额冷却待重试：${deferred_count} 张"
-  body+=$'\n'"$(render_pairs "$deferred")"
-fi
+  body+=
 [[ -z "$body" ]] || body+=$'\n\n'
 body+="📋 本轮：${checked} 个域名；发起 ${attempts} 次签发请求"
 body+=$'\n'"⏭ 无须更新：${valid_skipped} 张"
@@ -146,11 +145,15 @@ payload=$(jq -n --arg title "$title" --arg body "$body" \
   --arg url "$run_url" --arg group "SSL 证书管理" \
   '{title:$title, body:$body, group:$group, url:$url}')
 
-# 不将 BARK_URL（含设备密钥）或完整请求内容打印到 GitHub 日志。
+# HTTP 成功状态不代表 Bark 服务端接收成功，还需检验响应 code。
+# 不打印请求正文、设备密钥或原始响应。
+response_file=$(mktemp)
+trap 'rm -f "$response_file"' EXIT
 if curl -fsS --max-time 15 -X POST \
   -H 'Content-Type: application/json; charset=utf-8' \
-  --data-binary "$payload" "${BARK_URL%/}" >/dev/null; then
-  echo "✔ Bark 中文通知已发送（${title}）。"
+  --data-binary "$payload" "${BARK_URL%/}" > "$response_file" &&
+  jq -e '.code == 200' "$response_file" >/dev/null 2>&1; then
+  echo "✔ Bark 中文通知已被服务端确认（${title}）。"
 else
-  echo "::warning::Bark 推送失败，不改变原有证书签发或备份结果。"
+  echo "::warning::Bark 未确认推送成功（HTTP 或返回 code 异常）；证书签发/备份结果不受影响。"
 fi
