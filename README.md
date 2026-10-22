@@ -63,7 +63,7 @@
 
 1. 在 GitHub Actions 的 `Run workflow` 中选择 `auto`（默认）、`letsencrypt`、`zerossl` 或 `google`。已有证书仍有效时自动跳过，选择 CA 不会强制签发。
 2. 若希望启用 ZeroSSL 备用，先在 [ZeroSSL 控制台](https://zerossl.com/documentation/acme) 生成 ACME EAB 凭证，分别保存到仓库 Secrets `ZEROSSL_EAB_KID` / `ZEROSSL_EAB_HMAC_KEY`，随后在仓库 Settings → Secrets and variables → Actions → **Variables** 新建 `SSL_FALLBACK_CA=zerossl`。未设置或为 `off` 时完全不自动切换。
-3. `auto` 模式仅对 Let's Encrypt 明确的 **HTTP 5xx 服务异常**尝试 ZeroSSL；**429 限额、DNS-01 验证失败、CAA 限制及未分类错误不会自动更换 CA**。每个域名的 EC/RSA 仍各最多处理一次；一次备用尝试会额外增加一次实际 CA 发单请求。
+3. `auto` 模式默认只对 Let's Encrypt 明确的 **HTTP 5xx 服务异常**尝试 ZeroSSL。发生 **429 限额**时优先遵守 `Retry-After` 或原日志修改时间起 34 小时冷却；**仅当证书剩余不超过 7 天（含缺失/过期），且预计冷却尚需超过 24 小时**，才允许应急申请一张 ZeroSSL 证书。对同一个 429 冷却窗口最多应急尝试一次，失败后会在既有 `EC_issue.log` / `RSA_issue.log` 中保留原始 429 记录和尝试标记，防止下轮反复申请。DNS-01、CAA 限制及未分类错误均不触发自动切换。每个域名的 EC/RSA 仍各最多处理一次，但应急/服务故障切换会增加实际 CA 发单次数。
 4. 凭证设置完成后，先从 [SSL CA 接入预检查](.github/workflows/ssl_ca_readiness.yml) 手动选择 CA 并填写一个根域名。此流程只检查 EAB Secrets 是否存在、ACME 目录是否能访问，以及直接查询到的 CAA 信息；**不会签发证书、访问 Dropbox 或向 Bark 推送，也不能替代真实 DNS-01 验证**。
 5. 如果 DNS 上已经存在 CAA 限制，必须检查根域名与通配符签发权限：Let's Encrypt 通常使用 `letsencrypt.org`，ZeroSSL 通常使用 `sectigo.com`，Google Public CA 使用 `pki.goog`。必要时调整 `issue` 与 `issuewild`，没有 CAA 限制的域名不必为多 CA 特意添加记录。最终以 CA 的 CAA 校验结果为准。
 6. **Google Public CA 不能简单地在每日临时 GitHub Runner 上反复用同一 EAB 注册**：Google 的 EAB 仅能注册一次 ACME 账户。当前 `google` 选项用于手动接入试验；每次新 Runner 在未持久化原 ACME 账户密钥的情况下需要新 EAB。正式长期使用前，还必须完成**安全持久化 ACME 账户密钥及恢复测试**。本项目目前不在 Dropbox 额外保存账户密钥，也不会偷偷启用 Google 的每日签发或自动备用。Google Cloud 的 Public CA EAB 可参考[官方文档](https://cloud.google.com/certificate-manager/docs/public-ca-tutorial)。
@@ -78,7 +78,7 @@
 - 即使个别域名失败，也先完成已经校验成功的证书备份，最后才将工作流标记为失败。
 - 域名列表为空、证书目录异常或总体验证失败时，拒绝回写 Dropbox，防止误覆盖。
 - 不再使用固定 2 张或 12 张上限。每次读取 Dropbox 中最新的 `cloudflare_domains_list.txt`，忽略空行与注释、规范化大小写、过滤不合法域名并去重，每个有效域名最多尝试 EC 与 RSA 各一次。由此每轮实际签发请求自然不超过 `有效域名数 × 2`，且仅在证书需要更新、未处于 429 冷却期时才发起请求。
-- 遇到 Let's Encrypt 429 时，优先解析原有 `EC_issue.log` / `RSA_issue.log` 中的 `retry after` 并在到期前跳过；无有效重试时间时，按照现有日志修改时间至少退避约 34 小时，不新增 Dropbox 数据文件。
+- 遇到 Let's Encrypt 429 时，优先解析原有 `EC_issue.log` / `RSA_issue.log` 中的 `retry after` 并在到期前跳过；无有效重试时间时，按照原始日志修改时间至少退避约 34 小时。只有证书已接近过期/不存在，且预计等待超过 24 小时，才允许一轮 ZeroSSL 应急。应急失败后保留原始日志和冷却时间，并在**原有日志内**记录同一冷却窗口已经尝试过；不会为此新增 Dropbox 文件。
 - 回写前比较 Dropbox 远端文件清单与本地同步副本；发现可能误删的文件时停止备份，原 `rclone sync` 写入命令保持不变。
 - 到期检查任务不负责续签；剩余 30 天内显示警告，证书缺失或仅剩 7 天及以下显示严重异常。
 
@@ -92,7 +92,7 @@
 - Bark 消息统一归入“SSL 证书管理”分组，点击可跳转到当前 GitHub Actions 运行页面；时间以北京时间显示。
 - **没有新证书、也没有异常时不推送**，避免每天产生无意义消息；未配置 `BARK_URL` 时自动跳过。
 - 修改通知规则后可使用离线测试 `.github/tests/test_notify_bark.sh` 核对格式，无须连接 Bark、实际签发或写入 Dropbox。
-- 多 CA 选择、EAB 账户注册、HTTP 5xx 回退、429 不切换等逻辑由 `.github/tests/test_multi_ca.sh` 在离线环境模拟验证；**此测试不代表已成功连接 ZeroSSL / Google 真实生产环境**。
+- 多 CA 选择、EAB 账户注册、HTTP 5xx 回退、429 普通冷却与临期应急、跨运行防重复等逻辑由 `.github/tests/test_multi_ca.sh` 在离线环境模拟验证。ZeroSSL EC 通配符证书已在独立生产验收中成功签发；**应急 429 切换本身仍只通过离线模拟验证**。
 
 ## 验证结果与运维
 
