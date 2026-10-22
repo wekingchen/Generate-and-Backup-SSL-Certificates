@@ -16,7 +16,6 @@ env:
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
   DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
-  SSL_MAX_ISSUES_PER_RUN: 12
   ACME_PATH: "/home/runner/.acme.sh/acme.sh"
 
 jobs:

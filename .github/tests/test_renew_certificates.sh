@@ -80,7 +80,6 @@ run_case() {
     RATE_LIMIT_DOMAIN="${RATE_LIMIT_DOMAIN:-}" \
     SSL_ONLY_DOMAIN="${SSL_ONLY_DOMAIN:-}" \
     SSL_ONLY_TYPE="${SSL_ONLY_TYPE:-}" \
-    SSL_MAX_ISSUES_PER_RUN="${SSL_MAX_ISSUES_PER_RUN:-0}" \
     MISMATCH_DOMAIN="${MISMATCH_DOMAIN:-}" \
     bash "$RENEW_SCRIPT" )
 }
@@ -171,18 +170,19 @@ assert_output "failed_domains=limited.example/EC"
 [[ "$(wc -l < "$CASE_DIR/calls")" -eq 1 ]]
 
 
-echo "Test 7: scheduled mode caps issuance at two attempts and defers the rest"
+echo "Test 7: dynamic batch processes all eligible pairs with no fixed cap"
 new_case "batch"
 for name in first.example second.example; do
   make_pair "$name" EC "$CASE_DIR/fixtures/$name/EC"
   make_pair "$name" RSA "$CASE_DIR/fixtures/$name/RSA"
 done
 printf 'first.example\nsecond.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
-SSL_MAX_ISSUES_PER_RUN=2 run_case
+run_case
 assert_output "had_failures=false"
-assert_output "updated_domains=first.example"
-assert_output "deferred_certificates=second.example/EC,second.example/RSA"
-[[ "$(wc -l < "$CASE_DIR/calls")" -eq 2 ]]
+assert_output "updated_domains=first.example,second.example"
+assert_output "deferred_certificates="
+[[ "$(wc -l < "$CASE_DIR/calls")" -eq 4 ]]
+grep -Fqx -- '- 动态最大请求数（域名数 × 2）：4' "$CASE_DIR/summary"
 
 echo "Test 8: a persisted 429 retry-after prevents any further CA requests"
 new_case "cooldown"
@@ -191,7 +191,7 @@ printf 'HTTP 429 rateLimited: retry after 2099-01-01 00:00:00 UTC\n' \
   > "$CASE_DIR/work/ssl/cool.example/EC_issue.log"
 make_pair cool.example RSA "$CASE_DIR/work/ssl/cool.example/rsa"
 printf 'cool.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
-SSL_MAX_ISSUES_PER_RUN=2 run_case
+run_case
 assert_output "had_failures=false"
 assert_output "deferred_certificates=cool.example/EC"
 [[ ! -e "$CASE_DIR/calls" ]]
@@ -202,27 +202,49 @@ mkdir -p "$CASE_DIR/work/ssl/fallback.example"
 printf 'HTTP 429 rateLimited too many certificates\n' > "$CASE_DIR/work/ssl/fallback.example/EC_issue.log"
 make_pair fallback.example RSA "$CASE_DIR/work/ssl/fallback.example/rsa"
 printf 'fallback.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
-SSL_MAX_ISSUES_PER_RUN=2 run_case
+run_case
 assert_output "had_failures=false"
 assert_output "deferred_certificates=fallback.example/EC"
 [[ ! -e "$CASE_DIR/calls" ]]
 
 
-echo "Test 10: all six EC/RSA domain pairs can issue in one run with cap 12"
-new_case "six-domains"
+echo "Test 10: domain list growth automatically covers seven EC/RSA pairs"
+new_case "seven-domains"
 : > "$CASE_DIR/work/cloudflare_domains_list.txt"
-for i in 1 2 3 4 5 6; do
+for i in 1 2 3 4 5 6 7; do
   name="batch${i}.example"
   make_pair "$name" EC "$CASE_DIR/fixtures/$name/EC"
   make_pair "$name" RSA "$CASE_DIR/fixtures/$name/RSA"
   printf '%s\n' "$name" >> "$CASE_DIR/work/cloudflare_domains_list.txt"
 done
-printf 'batch7.example\n' >> "$CASE_DIR/work/cloudflare_domains_list.txt"
-SSL_MAX_ISSUES_PER_RUN=12 run_case
+run_case
 assert_output "had_failures=false"
-assert_output "deferred_certificates=batch7.example/EC,batch7.example/RSA"
-[[ "$(wc -l < "$CASE_DIR/calls")" -eq 12 ]]
-[[ -s "$CASE_DIR/work/ssl/batch6.example/rsa/fullchain.cer" ]]
-[[ ! -e "$CASE_DIR/work/ssl/batch7.example/fullchain.cer" ]]
+assert_output "deferred_certificates="
+[[ "$(wc -l < "$CASE_DIR/calls")" -eq 14 ]]
+[[ -s "$CASE_DIR/work/ssl/batch7.example/rsa/fullchain.cer" ]]
+grep -Fqx -- '- 动态最大请求数（域名数 × 2）：14' "$CASE_DIR/summary"
+
+echo "Test 11: list shrink and duplicate/case-insensitive entries are processed once"
+new_case "duplicate"
+make_pair single.example EC "$CASE_DIR/fixtures/single.example/EC"
+make_pair single.example RSA "$CASE_DIR/fixtures/single.example/RSA"
+printf '# comment\n\nsingle.example\nSINGLE.EXAMPLE\nsingle.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
+run_case
+assert_output "had_failures=false"
+assert_output "updated_domains=single.example"
+[[ "$(wc -l < "$CASE_DIR/calls")" -eq 2 ]]
+grep -Fqx -- '- 重复域名条目：2' "$CASE_DIR/summary"
+grep -Fqx -- '- 动态最大请求数（域名数 × 2）：2' "$CASE_DIR/summary"
+
+echo "Test 12: invalid entry does not trigger CA order"
+new_case "invalid"
+make_pair okay.example EC "$CASE_DIR/fixtures/okay.example/EC"
+make_pair okay.example RSA "$CASE_DIR/fixtures/okay.example/RSA"
+printf 'bad..example\nokay.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
+run_case
+assert_output "had_failures=true"
+assert_output "failed_domains=invalid-entry"
+[[ "$(wc -l < "$CASE_DIR/calls")" -eq 2 ]]
+grep -Fqx -- '- 动态最大请求数（域名数 × 2）：2' "$CASE_DIR/summary"
 
 echo "All offline SSL renewal regression tests passed."
