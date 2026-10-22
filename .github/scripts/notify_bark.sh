@@ -128,7 +128,13 @@ fi
 if [[ "$deferred_count" -gt 0 ]]; then
   [[ -z "$body" ]] || body+=$'\n\n'
   body+="⏳ 限额冷却待重试：${deferred_count} 张"
-  body+=
+  body+=$'\n'"$(render_pairs "$deferred")"
+fi
+if [[ "$critical_deferred_count" -gt 0 ]]; then
+  [[ -z "$body" ]] || body+=$'\n\n'
+  body+="🚨 缺失、过期或剩余不超过 7 天，且被限流阻塞：${critical_deferred_count} 项"
+  body+=$'\n'"$(render_pairs "$critical_deferred")"
+fi
 if [[ "$inventory_missing_count" -gt 0 ]]; then
   [[ -z "$body" ]] || body+=$'\n\n'
   body+="🚨 证书清单存在缺失：${inventory_missing_count} 项"
