@@ -60,7 +60,7 @@ run_case() {
   (cd "$CASE/work" &&
   env \
     HOME="$CASE/home" \
-    ACME_PATH="$0" \
+    ACME_PATH="$ROOT/.github/tests/test_multi_ca.sh" \
     DAYS_BEFORE_EXPIRY=30 \
     GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-workflow_dispatch}" \
     GITHUB_OUTPUT="$CASE/output" GITHUB_STEP_SUMMARY="$CASE/summary" \
