@@ -12,6 +12,7 @@ updated="${UPDATED_CERTIFICATES:-}"
 failed="${FAILED_CERTIFICATES:-}"
 deferred="${DEFERRED_CERTIFICATES:-}"
 critical_deferred="${CRITICAL_DEFERRED_CERTIFICATES:-}"
+inventory_missing="${INVENTORY_MISSING:-}"
 checked="${CHECKED_DOMAINS:-0}"
 valid_skipped="${VALID_SKIPPED:-0}"
 attempts="${ISSUE_ATTEMPTS:-0}"
@@ -24,7 +25,7 @@ for outcome in "${RENEW_OUTCOME:-skipped}" "${VERIFY_OUTCOME:-skipped}" \
                "${CONFIG_BACKUP_OUTCOME:-skipped}" "${SECRET_UPDATE_OUTCOME:-skipped}"; do
   [[ "$outcome" == success ]] || problem=1
 done
-[[ "${HAD_FAILURES:-false}" == true || "${HAD_CRITICAL_DEFERRED:-false}" == true ]] && problem=1
+[[ "${HAD_FAILURES:-false}" == true || "${HAD_CRITICAL_DEFERRED:-false}" == true || "${HAD_INVENTORY_GAPS:-false}" == true ]] && problem=1
 
 # 没有变动、没有签发错误且整体成功时保持静默，不产生无意义的每日推送。
 if [[ -z "$updated" && -z "$failed" && -z "$deferred" && "$problem" -eq 0 ]]; then
@@ -70,6 +71,7 @@ updated_count=$(csv_count "$updated")
 failed_count=$(csv_count "$failed")
 deferred_count=$(csv_count "$deferred")
 critical_deferred_count=$(csv_count "$critical_deferred")
+inventory_missing_count=$(csv_count "$inventory_missing")
 run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
 time_cn=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M（北京时间）')
 
@@ -77,6 +79,8 @@ if [[ "${BACKUP_OUTCOME:-skipped}" != success ]]; then
   title="SSL 证书备份异常"
 elif [[ "$critical_deferred_count" -gt 0 ]]; then
   title="SSL 证书临期风险 · $critical_deferred_count 项"
+elif [[ "$inventory_missing_count" -gt 0 ]]; then
+  title="SSL 证书清单缺失 · $inventory_missing_count 项"
 elif [[ "$failed_count" -gt 0 || "${HAD_FAILURES:-false}" == true ]]; then
   title="SSL 续签部分失败"
 elif [[ "$problem" -ne 0 ]]; then
@@ -125,6 +129,11 @@ if [[ "$deferred_count" -gt 0 ]]; then
   [[ -z "$body" ]] || body+=$'\n\n'
   body+="⏳ 限额冷却待重试：${deferred_count} 张"
   body+=
+if [[ "$inventory_missing_count" -gt 0 ]]; then
+  [[ -z "$body" ]] || body+=$'\n\n'
+  body+="🚨 证书清单存在缺失：${inventory_missing_count} 项"
+  body+=$'\n'"$(render_pairs "$inventory_missing")"
+fi
 [[ -z "$body" ]] || body+=$'\n\n'
 body+="📋 本轮：${checked} 个域名；发起 ${attempts} 次签发请求"
 body+=$'\n'"⏭ 无须更新：${valid_skipped} 张"
