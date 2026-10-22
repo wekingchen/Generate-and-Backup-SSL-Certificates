@@ -3,9 +3,9 @@ set -euo pipefail
 : "${EMAIL:?必须配置 EMAIL}"
 : "${ACME_PATH:=/home/runner/.acme.sh/acme.sh}"
 
-# Ubuntu 发行版签名包，避免直接执行未校验的远端 rclone 安装脚本。
-sudo apt-get update -qq
-sudo apt-get install -y -qq rclone
+# 固定 rclone 的独立安装和 SHA-256 校验，与证书到期检查共用。
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+bash "$ROOT/.github/scripts/install_rclone.sh"
 
 # acme.sh 固定官方 3.1.6 标签，必须匹配审核时确定的提交 SHA。
 tmp=$(mktemp -d)
