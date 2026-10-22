@@ -8,6 +8,8 @@ if [[ ! -s cloudflare_domains_list.txt || ! -d ssl ]]; then
 fi
 
 updated_domains=""
+updated_certificates=""
+valid_skipped=0
 failed_domains=""
 processed=0
 attempts=0
@@ -63,6 +65,7 @@ issue_one() {
 
   if certificate_usable "$certf" "$keyf" "$domain" "$threshold"; then
     echo "— $domain 的 $type 证书仍然有效，跳过。"
+    valid_skipped=$((valid_skipped + 1))
     return 0
   fi
 
@@ -131,6 +134,7 @@ issue_one() {
   if [[ -f "$src/ca.cer" ]]; then cp "$src/ca.cer" "$dest/ca.cer" || return 1; fi
 
   updated_domains="$updated_domains $domain"
+  updated_certificates="$updated_certificates $domain/$type"
   echo "✔ 已安装 $domain 的 $type 证书。"
   return 0
 }
@@ -166,6 +170,9 @@ while IFS= read -r domain || [[ -n "$domain" ]]; do
       if [[ -f "$logdir/${type}_issue.log" ]] &&
          grep -Eiq '429|rate.?limit|too many certificates|Retry-After' "$logdir/${type}_issue.log"; then
         echo "::warning::$domain 命中签发限额，本次跳过该域名后续算法。"
+        if [[ "$type" == EC && "$only_type" != EC ]]; then
+          deferred_certificates="$deferred_certificates $domain/RSA"
+        fi
         break
       fi
     fi
@@ -187,10 +194,12 @@ echo "✔ 本轮有效域名数：$processed；EC/RSA 理论上限：$max_possib
 
 # 每个域名分别记录失败，不中止其他域名；备份之后由工作流统一返回失败状态。
 updated_domains=$(printf '%s\n' $updated_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
+updated_certificates=$(printf '%s\n' $updated_certificates | sed '/^$/d' | sort -u | paste -sd ',' -)
 failed_domains=$(printf '%s\n' $failed_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
 deferred_certificates=$(printf '%s\n' $deferred_certificates | sed '/^$/d' | sort -u | paste -sd ',' -)
 if [[ -n "$GITHUB_OUTPUT" ]]; then
-  printf 'updated_domains=%s\nfailed_domains=%s\ndeferred_certificates=%s\n' "$updated_domains" "$failed_domains" "$deferred_certificates" >> "$GITHUB_OUTPUT"
+  printf 'updated_domains=%s\nupdated_certificates=%s\nfailed_domains=%s\ndeferred_certificates=%s\nchecked_domains=%s\nvalid_skipped=%s\nattempts=%s\n' \
+    "$updated_domains" "$updated_certificates" "$failed_domains" "$deferred_certificates" "$processed" "$valid_skipped" "$attempts" >> "$GITHUB_OUTPUT"
   if [[ -n "$failed_domains" ]]; then echo 'had_failures=true' >> "$GITHUB_OUTPUT"; else echo 'had_failures=false' >> "$GITHUB_OUTPUT"; fi
 fi
 
@@ -198,6 +207,8 @@ fi
   echo "### SSL 证书处理结果"
   echo ""
   echo "- 已更新域名：$updated_domains"
+  echo "- 已更新证书类型：$updated_certificates"
+  echo "- 原证书仍有效：$valid_skipped 张"
   echo "- 签发失败：$failed_domains"
   echo "- 限额冷却待重试：$deferred_certificates"
   echo "- 有效域名数（去重）：$processed"
