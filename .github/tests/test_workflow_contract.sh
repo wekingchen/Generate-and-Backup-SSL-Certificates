@@ -18,7 +18,8 @@ grep -Fq '  contents: read' "$wf"
 
 echo "Workflow Contract Test 3: Cloudflare tokens not exposed during package installation"
 ! sed -n '/^env:/,/^jobs:/p' "$wf" | grep -Eq 'CF_TOKEN|CF_ACCOUNT_ID'
-grep -Fq '807da6498377ee5e0cf43a78091f46f12dc59a89' "$wf"
+grep -Fq 'run: bash .github/scripts/install_dependencies.sh' "$wf"
+grep -Fq '807da6498377ee5e0cf43a78091f46f12dc59a89' .github/scripts/install_dependencies.sh
 
 echo "Workflow Contract Test 4: safe inventory and Dropbox guard block backup on failure"
 grep -Fq 'run: bash .github/scripts/verify_inventory.sh' "$wf"
