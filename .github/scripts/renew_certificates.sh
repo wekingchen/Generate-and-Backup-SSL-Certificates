@@ -19,6 +19,7 @@ processed=0
 attempts=0
 ca_orders=0
 deferred_certificates=""
+critical_deferred_certificates=""
 skipped_duplicates=0
 # 用户维护的域名列表是唯一来源。每个有效域名只处理 EC/RSA 各一次。
 # 因此单轮理论上最多发起 2 * 有效去重域名数 个签发请求，
@@ -95,6 +96,18 @@ rate_limit_until() {
   fi
 }
 
+# 429 暂缓不能丢失证书临期风险：缺失/过期/仅剩 7 天均单独报警。
+mark_deferred() {
+  local domain="$1" type="$2" dest="./ssl/$1" seconds
+  [[ "$type" == RSA ]] && dest="$dest/rsa"
+  deferred_certificates="$deferred_certificates $domain/$type"
+  seconds=$(certificate_seconds_left "$dest/fullchain.cer" "$dest/private.key" "$domain")
+  if ((seconds <= 7 * 86400)); then
+    critical_deferred_certificates="$critical_deferred_certificates $domain/$type"
+    echo "::error::$domain $type 因限流无法续签，证书已缺失、过期或剩余不超过 7 天。"
+  fi
+}
+
 acme_issue_one() {
   local ca="$1" domain="$2" keylength="$3" log="$4"
   ssl_ca_register "$ca" || return 1
@@ -137,7 +150,7 @@ issue_one() {
     if ((cooldown_until > $(date -u +%s))); then
       if grep -Fq 'SSL_EMERGENCY_ZEROSSL_ATTEMPTED=1' "$logf"; then
         echo "— $domain $type 的 ZeroSSL 应急尝试在本冷却窗口内已经失败，不再重复请求。"
-        deferred_certificates="$deferred_certificates $domain/$type"
+        mark_deferred "$domain" "$type"
         return 0
       fi
       if [[ "$SSL_CA_MODE" == auto && "$SSL_FALLBACK_CA" == zerossl ]] &&
@@ -146,7 +159,7 @@ issue_one() {
         echo "::warning::$domain $type 处于 429 冷却期；旧证书剩余约 $((remaining_seconds / 86400)) 天，允许一次 ZeroSSL 应急签发。"
       else
         echo "— $domain $type 处于 429 冷却期，预计 UTC $(date -u -d "@$cooldown_until" +'%Y-%m-%d %H:%M') 后重试；旧证书剩余约 $((remaining_seconds / 86400)) 天。"
-        deferred_certificates="$deferred_certificates $domain/$type"
+        mark_deferred "$domain" "$type"
         return 0
       fi
     fi
@@ -174,7 +187,7 @@ issue_one() {
       if ((ca_orders > orders_before)); then
         record_429_emergency_failure "$logf" || return 1
       fi
-      deferred_certificates="$deferred_certificates $domain/$type"
+      mark_deferred "$domain" "$type"
       return 1
     fi
 
@@ -207,7 +220,7 @@ issue_one() {
           if ((ca_orders > orders_before)); then
             record_429_emergency_failure "$logf" || { rm -f "$fallback_log"; return 1; }
           fi
-          deferred_certificates="$deferred_certificates $domain/$type"
+          mark_deferred "$domain" "$type"
         fi
         rm -f "$fallback_log"
         return 1
@@ -288,7 +301,7 @@ while IFS= read -r domain || [[ -n "$domain" ]]; do
          grep -Eiq '429|rate.?limit|too many certificates|Retry-After' "$logdir/${type}_issue.log"; then
         echo "::warning::$domain 命中签发限额，本次跳过该域名后续算法。"
         if [[ "$type" == EC && "$only_type" != EC ]]; then
-          deferred_certificates="$deferred_certificates $domain/RSA"
+          mark_deferred "$domain" RSA
         fi
         break
       fi
@@ -315,10 +328,12 @@ updated_certificates=$(printf '%s\n' $updated_certificates | sed '/^$/d' | sort 
 certificate_issuers=$(printf '%s\n' $certificate_issuers | sed '/^$/d' | sort -u | paste -sd ',' -)
 failed_domains=$(printf '%s\n' $failed_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
 deferred_certificates=$(printf '%s\n' $deferred_certificates | sed '/^$/d' | sort -u | paste -sd ',' -)
+critical_deferred_certificates=$(printf '%s\n' $critical_deferred_certificates | sed '/^$/d' | sort -u | paste -sd ',' -)
 if [[ -n "$GITHUB_OUTPUT" ]]; then
-  printf 'updated_domains=%s\nupdated_certificates=%s\ncertificate_issuers=%s\nfailed_domains=%s\ndeferred_certificates=%s\nchecked_domains=%s\nvalid_skipped=%s\nattempts=%s\nca_orders=%s\n' \
-    "$updated_domains" "$updated_certificates" "$certificate_issuers" "$failed_domains" "$deferred_certificates" "$processed" "$valid_skipped" "$attempts" "$ca_orders" >> "$GITHUB_OUTPUT"
+  printf 'updated_domains=%s\nupdated_certificates=%s\ncertificate_issuers=%s\nfailed_domains=%s\ndeferred_certificates=%s\ncritical_deferred_certificates=%s\nchecked_domains=%s\nvalid_skipped=%s\nattempts=%s\nca_orders=%s\n' \
+    "$updated_domains" "$updated_certificates" "$certificate_issuers" "$failed_domains" "$deferred_certificates" "$critical_deferred_certificates" "$processed" "$valid_skipped" "$attempts" "$ca_orders" >> "$GITHUB_OUTPUT"
   if [[ -n "$failed_domains" ]]; then echo 'had_failures=true' >> "$GITHUB_OUTPUT"; else echo 'had_failures=false' >> "$GITHUB_OUTPUT"; fi
+  if [[ -n "$critical_deferred_certificates" ]]; then echo 'had_critical_deferred=true' >> "$GITHUB_OUTPUT"; else echo 'had_critical_deferred=false' >> "$GITHUB_OUTPUT"; fi
 fi
 
 {
@@ -331,6 +346,7 @@ fi
   echo "- 原证书仍有效：$valid_skipped 张"
   echo "- 签发失败：$failed_domains"
   echo "- 限额冷却待重试：$deferred_certificates"
+  echo "- 临期或缺失且被限流阻塞：$critical_deferred_certificates"
   echo "- 有效域名数（去重）：$processed"
   echo "- 重复域名条目：$skipped_duplicates"
   echo "- 动态最大检查项目数（域名数 × 2）：$max_possible"
@@ -341,4 +357,7 @@ fi
 
 if [[ -n "$failed_domains" ]]; then
   echo "::warning::部分证书签发失败，仍将尝试备份其他已成功验证的证书。"
+fi
+if [[ -n "$critical_deferred_certificates" ]]; then
+  echo "::error::存在临期或缺失、仍受 429 冷却阻塞的证书；允许备份其他有效证书，但最终必须标记任务异常并推送 Bark。"
 fi
