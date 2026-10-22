@@ -8,6 +8,7 @@ on:
       - ".github/workflows/ssl_offline_tests.yml"
       - ".github/workflows/generate_and_backup_ssl.yml"
       - ".github/workflows/check_ssl_expiry.yml"
+      - ".github/workflows/ssl_ca_readiness.yml"
   workflow_dispatch:
 
 permissions:
@@ -18,19 +19,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout pull request code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Syntax-check renewal shell
         run: |
           bash -n .github/scripts/renew_certificates.sh
           bash -n .github/scripts/ca_provider.sh
+          bash -n .github/scripts/verify_certificate.sh
+          bash -n .github/scripts/verify_inventory.sh
           bash -n .github/scripts/notify_bark.sh
           bash -n .github/tests/test_renew_certificates.sh
           bash -n .github/tests/test_multi_ca.sh
+          bash -n .github/tests/test_verify_inventory.sh
           bash -n .github/tests/test_notify_bark.sh
 
       - name: Run tests without ACME or Dropbox access
         run: |
           bash .github/tests/test_renew_certificates.sh
           bash .github/tests/test_multi_ca.sh
+          bash .github/tests/test_verify_inventory.sh
           bash .github/tests/test_notify_bark.sh
