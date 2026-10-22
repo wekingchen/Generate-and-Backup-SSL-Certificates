@@ -26,6 +26,7 @@ jobs:
           bash -n .github/scripts/renew_certificates.sh
           bash -n .github/scripts/ca_provider.sh
           bash -n .github/scripts/install_dependencies.sh
+          bash -n .github/scripts/install_rclone.sh
           bash -n .github/scripts/verify_certificate.sh
           bash -n .github/scripts/verify_inventory.sh
           bash -n .github/scripts/guard_dropbox_deletions.sh
@@ -53,7 +54,7 @@ jobs:
     steps:
       - name: 检出测试代码
         uses: actions/checkout@v6
-      - name: 安装签名来源 rclone 与固定版本 acme.sh
+      - name: 安装固定 SHA-256 的 rclone 与固定版本 acme.sh
         env:
           EMAIL: ssl-offline-ci@example.invalid
           ACME_PATH: /home/runner/.acme.sh/acme.sh
