@@ -241,27 +241,43 @@ issue_one() {
     return 1
   fi
 
-  # 先把候选文件放入独立临时目录，避免校验前覆盖旧文件。
-  local stage
-  stage=$(mktemp -d) || return 1
-  if ! cp "$src/fullchain.cer" "$stage/fullchain.cer" ||
-     ! cp "$src/$domain.key" "$stage/private.key"; then
+  # 在目标证书目录下完成同文件系统暂存，再依次原子替换单个文件。
+  # 三文件无法由文件系统一次原子替换；任何安装失败必须完整回滚。
+  local stage item backup_failed=false
+  stage=$(mktemp -d "$dest/.ssl-stage.XXXXXX") || return 1
+  if ! cp "$src/fullchain.cer" "$stage/new-fullchain.cer" ||
+     ! cp "$src/$domain.key" "$stage/new-private.key" ||
+     ! chmod 600 "$stage/new-private.key"; then
     rm -rf "$stage"
     return 1
   fi
-
-  # 失败时保留原始副本，后续整体验证失败会阻止 Dropbox 回写。
-  if [[ -f "$certf" ]]; then cp "$certf" "$stage/old-fullchain.cer" || { rm -rf "$stage"; return 1; }; fi
-  if [[ -f "$keyf" ]]; then cp "$keyf" "$stage/old-private.key" || { rm -rf "$stage"; return 1; }; fi
-  if ! cp "$stage/fullchain.cer" "$certf" || ! cp "$stage/private.key" "$keyf"; then
-    [[ ! -f "$stage/old-fullchain.cer" ]] || cp "$stage/old-fullchain.cer" "$certf"
-    [[ ! -f "$stage/old-private.key" ]] || cp "$stage/old-private.key" "$keyf"
+  if [[ -s "$src/ca.cer" ]]; then
+    if ! cp "$src/ca.cer" "$stage/new-ca.cer"; then rm -rf "$stage"; return 1; fi
+  fi
+  # 预留三个文件的旧版副本。没有旧 ca.cer 时，成功后也不应遗留过期 CA。
+  for item in fullchain.cer private.key ca.cer; do
+    if [[ -e "$dest/$item" ]] && ! cp -p "$dest/$item" "$stage/old-$item"; then
+      rm -rf "$stage"
+      return 1
+    fi
+  done
+  if ! { mv -f "$stage/new-fullchain.cer" "$certf" &&
+         mv -f "$stage/new-private.key" "$keyf" &&
+         { if [[ -s "$stage/new-ca.cer" ]]; then mv -f "$stage/new-ca.cer" "$dest/ca.cer"; else rm -f "$dest/ca.cer"; fi; };
+       }; then
+    echo "::error::$domain $type 安装新证书文件失败，执行三文件完整回滚。"
+    for item in fullchain.cer private.key ca.cer; do
+      if [[ -e "$stage/old-$item" ]]; then
+        cp -p "$stage/old-$item" "$dest/$item" || backup_failed=true
+      else
+        rm -f "$dest/$item" || backup_failed=true
+      fi
+    done
     rm -rf "$stage"
+    [[ "$backup_failed" == false ]] || echo "::error::$domain $type 回滚失败；下游校验将阻止备份。"
     return 1
   fi
   rm -rf "$stage"
-  if [[ -f "$src/ca.cer" ]]; then cp "$src/ca.cer" "$dest/ca.cer" || return 1; fi
-
   updated_domains="$updated_domains $domain"
   updated_certificates="$updated_certificates $domain/$type"
   certificate_issuers="$certificate_issuers $domain/$type=$chosen_ca"
