@@ -64,8 +64,9 @@
 1. 在 GitHub Actions 的 `Run workflow` 中选择 `auto`（默认）、`letsencrypt`、`zerossl` 或 `google`。已有证书仍有效时自动跳过，选择 CA 不会强制签发。
 2. 若希望启用 ZeroSSL 备用，先在 [ZeroSSL 控制台](https://zerossl.com/documentation/acme) 生成 ACME EAB 凭证，分别保存到仓库 Secrets `ZEROSSL_EAB_KID` / `ZEROSSL_EAB_HMAC_KEY`，随后在仓库 Settings → Secrets and variables → Actions → **Variables** 新建 `SSL_FALLBACK_CA=zerossl`。未设置或为 `off` 时完全不自动切换。
 3. `auto` 模式仅对 Let's Encrypt 明确的 **HTTP 5xx 服务异常**尝试 ZeroSSL；**429 限额、DNS-01 验证失败、CAA 限制及未分类错误不会自动更换 CA**。每个域名的 EC/RSA 仍各最多处理一次；一次备用尝试会额外增加一次实际 CA 发单请求。
-4. 如果 DNS 上已经存在 CAA 限制，必须检查根域名与通配符签发权限：Let's Encrypt 通常使用 `letsencrypt.org`，ZeroSSL 通常使用 `sectigo.com`，Google Public CA 使用 `pki.goog`。必要时调整 `issue` 与 `issuewild`，没有 CAA 限制的域名不必为多 CA 特意添加记录。最终以 CA 的 CAA 校验结果为准。
-5. **Google Public CA 不能简单地在每日临时 GitHub Runner 上反复用同一 EAB 注册**：Google 的 EAB 仅能注册一次 ACME 账户。当前 `google` 选项用于手动接入试验；每次新 Runner 在未持久化原 ACME 账户密钥的情况下需要新 EAB。正式长期使用前，还必须完成**安全持久化 ACME 账户密钥及恢复测试**。本项目目前不在 Dropbox 额外保存账户密钥，也不会偷偷启用 Google 的每日签发或自动备用。Google Cloud 的 Public CA EAB 可参考[官方文档](https://cloud.google.com/certificate-manager/docs/public-ca-tutorial)。
+4. 凭证设置完成后，先从 [SSL CA 接入预检查](.github/workflows/ssl_ca_readiness.yml) 手动选择 CA 并填写一个根域名。此流程只检查 EAB Secrets 是否存在、ACME 目录是否能访问，以及直接查询到的 CAA 信息；**不会签发证书、访问 Dropbox 或向 Bark 推送，也不能替代真实 DNS-01 验证**。
+5. 如果 DNS 上已经存在 CAA 限制，必须检查根域名与通配符签发权限：Let's Encrypt 通常使用 `letsencrypt.org`，ZeroSSL 通常使用 `sectigo.com`，Google Public CA 使用 `pki.goog`。必要时调整 `issue` 与 `issuewild`，没有 CAA 限制的域名不必为多 CA 特意添加记录。最终以 CA 的 CAA 校验结果为准。
+6. **Google Public CA 不能简单地在每日临时 GitHub Runner 上反复用同一 EAB 注册**：Google 的 EAB 仅能注册一次 ACME 账户。当前 `google` 选项用于手动接入试验；每次新 Runner 在未持久化原 ACME 账户密钥的情况下需要新 EAB。正式长期使用前，还必须完成**安全持久化 ACME 账户密钥及恢复测试**。本项目目前不在 Dropbox 额外保存账户密钥，也不会偷偷启用 Google 的每日签发或自动备用。Google Cloud 的 Public CA EAB 可参考[官方文档](https://cloud.google.com/certificate-manager/docs/public-ca-tutorial)。
 
 **安全边界：** 不会把 EAB、ACME 账户私钥写入仓库或 Bark；签发成功之后才替换原有证书，私钥与证书必须匹配；即使备用 CA 失败也不会覆盖现有有效证书。CA 实际来源会出现在 Actions 中文摘要与 Bark 通知中。
 
