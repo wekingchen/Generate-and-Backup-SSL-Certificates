@@ -63,11 +63,12 @@ jobs:
             cert="$1/fullchain.cer"
             key="$1/private.key"
             domain="$2"
+            type="$3"
             if [ ! -s "$cert" ] || [ ! -s "$key" ]; then
               echo "未找到|0"
               return
             fi
-            if ! bash .github/scripts/verify_certificate.sh "$cert" "$key" "$domain" 0 >/dev/null 2>&1; then
+            if ! bash .github/scripts/verify_certificate.sh "$cert" "$key" "$domain" 0 "$type" >/dev/null 2>&1; then
               echo "校验失败|0"
               return
             fi
@@ -101,8 +102,8 @@ jobs:
               echo "::error::域名清单存在非法条目。"
               exit 1
             fi
-            IFS='|' read -r ec_date ec_days <<< "$(check_cert "./ssl/$domain" "$domain")"
-            IFS='|' read -r rsa_date rsa_days <<< "$(check_cert "./ssl/$domain/rsa" "$domain")"
+            IFS='|' read -r ec_date ec_days <<< "$(check_cert "./ssl/$domain" "$domain" EC)"
+            IFS='|' read -r rsa_date rsa_days <<< "$(check_cert "./ssl/$domain/rsa" "$domain" RSA)"
             printf "| %s | %s | %d | %s | %d |\n" \
               "$domain" "$ec_date" "$ec_days" "$rsa_date" "$rsa_days" \
               >> CHECK_LIST.md
