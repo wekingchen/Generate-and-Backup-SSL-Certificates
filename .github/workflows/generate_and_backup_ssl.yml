@@ -20,10 +20,11 @@ on:
           - google
         default: auto
 
+permissions:
+  contents: read
+
 env:
   EMAIL: ${{ secrets.EMAIL }}
-  CF_TOKEN: ${{ secrets.CF_TOKEN }}
-  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
   RCLONE_PARAMS: "--transfers=10 --checkers=10 --stats=1s"
   DROPBOX_PATH: "SSL"
   DAYS_BEFORE_EXPIRY: 30
@@ -37,10 +38,20 @@ jobs:
       - name: Checkout master
         uses: actions/checkout@v6
 
-      - name: Install rclone and acme.sh
+      - name: 安装受发行版签名保护的 rclone 与固定版本 acme.sh
+        shell: bash
         run: |
-          curl https://rclone.org/install.sh | sudo bash
-          curl https://get.acme.sh | sh -s email=$EMAIL
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rclone
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          git clone -q --depth 1 --branch 3.1.6 https://github.com/acmesh-official/acme.sh.git "$tmp/acme.sh"
+          [[ "$(git -C "$tmp/acme.sh" rev-parse HEAD)" == 807da6498377ee5e0cf43a78091f46f12dc59a89 ]] || { echo "::error::acme.sh 源码版本校验失败。"; exit 1; }
+          bash "$tmp/acme.sh/acme.sh" --install --home "$HOME/.acme.sh" --accountemail "$EMAIL" >/dev/null
+          test -x "$ACME_PATH"
+          rclone version | head -n 1
+          echo "✔ 软件包来源及 acme.sh 固定提交校验完成。"
 
       - name: Configure rclone
         env:
@@ -67,28 +78,10 @@ jobs:
           GOOGLE_EAB_HMAC_KEY: ${{ secrets.GOOGLE_EAB_HMAC_KEY }}
         run: bash .github/scripts/renew_certificates.sh
 
-      - name: Validate new certificates
+      - name: 校验证书链、域名与私钥完整性
         id: validate
-        run: |
-          set -eo pipefail
-          count=0
-          while IFS= read -r -d '' cert; do
-            key="$(dirname "$cert")/private.key"
-            test -s "$key"
-            openssl x509 -in "$cert" -noout -checkend 0 >/dev/null
-            cert_pub=$(openssl x509 -in "$cert" -pubkey -noout |
-              openssl pkey -pubin -outform DER | sha256sum | cut -d ' ' -f1)
-            key_pub=$(openssl pkey -in "$key" -pubout -outform DER |
-              sha256sum | cut -d ' ' -f1)
-            test "$cert_pub" = "$key_pub"
-            count=$((count + 1))
-          done < <(find ./ssl -name "fullchain.cer" -print0)
-          if [ "$count" -eq 0 ]; then
-            echo "::error::未找到任何有效证书，拒绝备份。"
-            exit 1
-          fi
-          echo "✔ 已验证 $count 张证书及对应私钥。"
-
+        shell: bash
+        run: bash .github/scripts/verify_inventory.sh
       - name: Guard remote Dropbox files against accidental deletion
         id: remote_guard
         run: |
@@ -133,6 +126,10 @@ jobs:
           UPDATED_CERTIFICATES: ${{ steps.renew.outputs.updated_certificates }}
           FAILED_CERTIFICATES: ${{ steps.renew.outputs.failed_domains }}
           DEFERRED_CERTIFICATES: ${{ steps.renew.outputs.deferred_certificates }}
+          CRITICAL_DEFERRED_CERTIFICATES: ${{ steps.renew.outputs.critical_deferred_certificates }}
+          HAD_CRITICAL_DEFERRED: ${{ steps.renew.outputs.had_critical_deferred }}
+          INVENTORY_MISSING: ${{ steps.validate.outputs.inventory_missing }}
+          HAD_INVENTORY_GAPS: ${{ steps.validate.outputs.had_inventory_gaps }}
           CHECKED_DOMAINS: ${{ steps.renew.outputs.checked_domains }}
           VALID_SKIPPED: ${{ steps.renew.outputs.valid_skipped }}
           ISSUE_ATTEMPTS: ${{ steps.renew.outputs.ca_orders }}
@@ -153,7 +150,11 @@ jobs:
              [ "${{ steps.backup.outcome }}" != "success" ] ||
              [ "${{ steps.config_backup.outcome }}" != "success" ] ||
              [ "${{ steps.secret_update.outcome }}" != "success" ] ||
-             [ "${{ steps.renew.outputs.had_failures }}" = "true" ]; then
+             [ "${{ steps.renew.outputs.had_failures }}" = "true" ] ||
+             [ "${{ steps.renew.outputs.had_critical_deferred }}" = "true" ] ||
+             [ "${{ steps.validate.outputs.had_inventory_gaps }}" = "true" ] ||
+             [ "${{ steps.validate.outcome }}" != "success" ] ||
+             [ "${{ steps.remote_guard.outcome }}" != "success" ]; then
             echo "::error::存在证书签发、校验或备份失败，请查看上方中文汇总。"
             exit 1
           fi
