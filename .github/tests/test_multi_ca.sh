@@ -104,14 +104,41 @@ expect_output "attempts=1"
 expect_output "ca_orders=2"
 [[ "$(wc -l < "$CASE/ca_calls")" -eq 2 ]]
 
-echo "Multi-CA Test 4: 429 does NOT switch issuer"
+echo "Multi-CA Test 4: first issuance + 429 switches once after 34h fallback window"
+new_case "429-first-issuance"
+SSL_FALLBACK_CA=zerossl MOCK_LE_FAIL=429 \
+  ZEROSSL_EAB_KID=kid ZEROSSL_EAB_HMAC_KEY=secret run_case
+expect_output "had_failures=false"
+expect_output "certificate_issuers=multi.example/EC=zerossl"
+expect_output "ca_orders=2"
+[[ "$(wc -l < "$CASE/ca_calls")" -eq 2 ]]
+
+echo "Multi-CA Test 4b: 429 with 20-day valid certificate does NOT switch"
 new_case "429-no-switch"
+mkdir -p "$CASE/work/ssl/multi.example"
+openssl req -x509 -new -sha256 -days 20 -key "$TMP/fixture/private.key" \
+  -subj "/CN=multi.example" -addext "subjectAltName=DNS:multi.example,DNS:*.multi.example" \
+  -out "$CASE/work/ssl/multi.example/fullchain.cer" >/dev/null 2>&1
+cp "$TMP/fixture/private.key" "$CASE/work/ssl/multi.example/private.key"
 SSL_FALLBACK_CA=zerossl MOCK_LE_FAIL=429 \
   ZEROSSL_EAB_KID=kid ZEROSSL_EAB_HMAC_KEY=secret run_case
 expect_output "had_failures=true"
 expect_output "ca_orders=1"
 [[ "$(wc -l < "$CASE/ca_calls")" -eq 1 ]]
 [[ ! -e "$CASE/registers" ]]
+
+echo "Multi-CA Test 4c: 429 with 5-day certificate switches to ZeroSSL"
+new_case "429-near-expiry"
+mkdir -p "$CASE/work/ssl/multi.example"
+openssl req -x509 -new -sha256 -days 5 -key "$TMP/fixture/private.key" \
+  -subj "/CN=multi.example" -addext "subjectAltName=DNS:multi.example,DNS:*.multi.example" \
+  -out "$CASE/work/ssl/multi.example/fullchain.cer" >/dev/null 2>&1
+cp "$TMP/fixture/private.key" "$CASE/work/ssl/multi.example/private.key"
+SSL_FALLBACK_CA=zerossl MOCK_LE_FAIL=429 \
+  ZEROSSL_EAB_KID=kid ZEROSSL_EAB_HMAC_KEY=secret run_case
+expect_output "had_failures=false"
+expect_output "certificate_issuers=multi.example/EC=zerossl"
+expect_output "ca_orders=2"
 
 echo "Multi-CA Test 5: missing EAB cannot bypass primary failure"
 new_case "missing-eab"
