@@ -8,6 +8,17 @@ on:
   schedule:
     - cron: "35 23 * * *"
   workflow_dispatch:
+    inputs:
+      ca:
+        description: "签发机构（auto=Let's Encrypt，备份由仓库变量控制；google 仅供手动试验）"
+        required: true
+        type: choice
+        options:
+          - auto
+          - letsencrypt
+          - zerossl
+          - google
+        default: auto
 
 env:
   EMAIL: ${{ secrets.EMAIL }}
@@ -48,6 +59,12 @@ jobs:
         env:
           CF_Token: ${{ secrets.CF_TOKEN }}
           CF_Account_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          SSL_CA_MODE: ${{ inputs.ca || 'auto' }}
+          SSL_FALLBACK_CA: ${{ vars.SSL_FALLBACK_CA || 'off' }}
+          ZEROSSL_EAB_KID: ${{ secrets.ZEROSSL_EAB_KID }}
+          ZEROSSL_EAB_HMAC_KEY: ${{ secrets.ZEROSSL_EAB_HMAC_KEY }}
+          GOOGLE_EAB_KID: ${{ secrets.GOOGLE_EAB_KID }}
+          GOOGLE_EAB_HMAC_KEY: ${{ secrets.GOOGLE_EAB_HMAC_KEY }}
         run: bash .github/scripts/renew_certificates.sh
 
       - name: Validate new certificates
@@ -119,6 +136,7 @@ jobs:
           CHECKED_DOMAINS: ${{ steps.renew.outputs.checked_domains }}
           VALID_SKIPPED: ${{ steps.renew.outputs.valid_skipped }}
           ISSUE_ATTEMPTS: ${{ steps.renew.outputs.attempts }}
+          CERTIFICATE_ISSUERS: ${{ steps.renew.outputs.certificate_issuers }}
           HAD_FAILURES: ${{ steps.renew.outputs.had_failures }}
           RENEW_OUTCOME: ${{ steps.renew.outcome }}
           VERIFY_OUTCOME: ${{ steps.validate.outcome }}
