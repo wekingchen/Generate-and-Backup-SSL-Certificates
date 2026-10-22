@@ -1,6 +1,6 @@
 # 使用 GitHub Actions 自动生成和备份 SSL 证书
 
-本仓库通过 GitHub Actions、[acme.sh](https://github.com/acmesh-official/acme.sh)、Cloudflare DNS 和 Dropbox 管理 Let's Encrypt 证书，继续支持 **ECC (EC P-256)** 与 **RSA 2048** 两种格式。
+本仓库通过 GitHub Actions、[acme.sh](https://github.com/acmesh-official/acme.sh)、Cloudflare DNS 和 Dropbox 管理支持多个 CA 的公开信任证书，继续支持 **ECC (EC P-256)** 与 **RSA 2048** 两种格式。
 
 ## 两条工作流
 
@@ -46,8 +46,28 @@
 | `RCLONE_CONFIG` | Dropbox 的完整 rclone 配置 |
 | `CLI_TOKEN` | 使用 GitHub CLI 更新 `RCLONE_CONFIG` Secret |
 | `BARK_URL` | 可选，Bark 推送地址 |
+| `ZEROSSL_EAB_KID`、`ZEROSSL_EAB_HMAC_KEY` | ZeroSSL 的 ACME 外部账户绑定凭证，启用备用 CA 前必须配齐 |
+| `GOOGLE_EAB_KID`、`GOOGLE_EAB_HMAC_KEY` | Google Public CA EAB，仅供一次性手动接入试验；一次注册后不能重复使用 |
 
 不要把私钥、rclone 配置、Cloudflare Token 或 Dropbox Token 提交到公开仓库。`GITHUB_TOKEN` 由 Actions 自动提供，不应手动创建同名 Secret。
+
+## 多 CA 签发策略（2026-10-22）
+
+现有 Let's Encrypt 默认签发完全不变。两种算法、动态域名清单、证书有效期检查、Dropbox `rclone` 读写命令和目录格式不变。
+
+| CA | 日常默认 | 手动选择 | 自动备用 |
+| --- | --- | --- | --- |
+| Let's Encrypt (`letsencrypt`) | 是 | 支持 | 不适用 |
+| ZeroSSL (`zerossl`) | 否 | 配好 EAB 后支持 | **仅设置仓库变量后启用** |
+| Google Public CA (`google`) | 否 | 单次受控试验 | **禁止自动切换** |
+
+1. 在 GitHub Actions 的 `Run workflow` 中选择 `auto`（默认）、`letsencrypt`、`zerossl` 或 `google`。已有证书仍有效时自动跳过，选择 CA 不会强制签发。
+2. 若希望启用 ZeroSSL 备用，先在 [ZeroSSL 控制台](https://zerossl.com/documentation/acme) 生成 ACME EAB 凭证，分别保存到仓库 Secrets `ZEROSSL_EAB_KID` / `ZEROSSL_EAB_HMAC_KEY`，随后在仓库 Settings → Secrets and variables → Actions → **Variables** 新建 `SSL_FALLBACK_CA=zerossl`。未设置或为 `off` 时完全不自动切换。
+3. `auto` 模式仅对 Let's Encrypt 明确的 **HTTP 5xx 服务异常**尝试 ZeroSSL；**429 限额、DNS-01 验证失败、CAA 限制及未分类错误不会自动更换 CA**。每个域名的 EC/RSA 仍各最多处理一次；一次备用尝试会额外增加一次实际 CA 发单请求。
+4. 如果 DNS 上已经存在 CAA 限制，必须检查根域名与通配符签发权限：Let's Encrypt 通常使用 `letsencrypt.org`，ZeroSSL 通常使用 `sectigo.com`，Google Public CA 使用 `pki.goog`。必要时调整 `issue` 与 `issuewild`，没有 CAA 限制的域名不必为多 CA 特意添加记录。最终以 CA 的 CAA 校验结果为准。
+5. **Google Public CA 不能简单地在每日临时 GitHub Runner 上反复用同一 EAB 注册**：Google 的 EAB 仅能注册一次 ACME 账户。当前 `google` 选项用于手动接入试验；每次新 Runner 在未持久化原 ACME 账户密钥的情况下需要新 EAB。正式长期使用前，还必须完成**安全持久化 ACME 账户密钥及恢复测试**。本项目目前不在 Dropbox 额外保存账户密钥，也不会偷偷启用 Google 的每日签发或自动备用。Google Cloud 的 Public CA EAB 可参考[官方文档](https://cloud.google.com/certificate-manager/docs/public-ca-tutorial)。
+
+**安全边界：** 不会把 EAB、ACME 账户私钥写入仓库或 Bark；签发成功之后才替换原有证书，私钥与证书必须匹配；即使备用 CA 失败也不会覆盖现有有效证书。CA 实际来源会出现在 Actions 中文摘要与 Bark 通知中。
 
 ## 证书生命周期与异常处理
 
@@ -71,6 +91,7 @@
 - Bark 消息统一归入“SSL 证书管理”分组，点击可跳转到当前 GitHub Actions 运行页面；时间以北京时间显示。
 - **没有新证书、也没有异常时不推送**，避免每天产生无意义消息；未配置 `BARK_URL` 时自动跳过。
 - 修改通知规则后可使用离线测试 `.github/tests/test_notify_bark.sh` 核对格式，无须连接 Bark、实际签发或写入 Dropbox。
+- 多 CA 选择、EAB 账户注册、HTTP 5xx 回退、429 不切换等逻辑由 `.github/tests/test_multi_ca.sh` 在离线环境模拟验证；**此测试不代表已成功连接 ZeroSSL / Google 真实生产环境**。
 
 ## 验证结果与运维
 
