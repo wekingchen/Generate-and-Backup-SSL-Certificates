@@ -23,7 +23,7 @@ case "$expected_type" in
       { echo "::error::$domain 期待 EC P-256 私钥，实际类型不符。"; exit 1; }
     ;;
   RSA)
-    openssl rsa -in "$key" -noout -text 2>/dev/null | grep -F "Private-Key: (2048 bit)" >/dev/null ||
+    openssl rsa -in "$key" -noout -text 2>/dev/null | grep -F "Private-Key: (2048 bit" >/dev/null ||
       { echo "::error::$domain 期待 RSA 2048 私钥，实际类型不符。"; exit 1; }
     ;;
   "") ;;
