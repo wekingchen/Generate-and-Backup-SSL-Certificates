@@ -202,6 +202,14 @@ expect_output "deferred_certificates=multi.example/EC"
 expect_output "ca_orders=0"
 [[ ! -e "$CASE/ca_calls" ]]
 
+echo "Multi-CA Test 4h: missing ZeroSSL EAB does not consume emergency order"
+new_case "429-no-eab"
+SSL_FALLBACK_CA=zerossl MOCK_LE_FAIL=429 run_case
+expect_output "had_failures=true"
+expect_output "ca_orders=1"
+grep -Fq 'HTTP 429' "$CASE/work/ssl/multi.example/EC_issue.log"
+! grep -Fq 'SSL_EMERGENCY_ZEROSSL_ATTEMPTED=1' "$CASE/work/ssl/multi.example/EC_issue.log"
+
 echo "Multi-CA Test 5: missing EAB cannot bypass primary failure"
 new_case "missing-eab"
 SSL_FALLBACK_CA=zerossl MOCK_LE_FAIL=503 run_case
