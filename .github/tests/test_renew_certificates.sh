@@ -100,7 +100,11 @@ printf 'good.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
 run_case
 assert_output "had_failures=false"
 assert_output "updated_domains="
+assert_output "updated_certificates="
 assert_output "failed_domains="
+assert_output "valid_skipped=2"
+assert_output "checked_domains=1"
+assert_output "attempts=0"
 [[ ! -e "$CASE_DIR/calls" ]]
 
 echo "Test 2: one failed domain does not prevent another from being issued"
@@ -111,7 +115,9 @@ printf 'renew.example\nbad.example\n' > "$CASE_DIR/work/cloudflare_domains_list.
 FAIL_DOMAIN=bad.example run_case
 assert_output "had_failures=true"
 assert_output "updated_domains=renew.example"
+assert_output "updated_certificates=renew.example/EC,renew.example/RSA"
 assert_output "failed_domains=bad.example/EC,bad.example/RSA"
+assert_output "attempts=4"
 [[ -s "$CASE_DIR/work/ssl/renew.example/fullchain.cer" ]]
 [[ -s "$CASE_DIR/work/ssl/renew.example/private.key" ]]
 [[ -s "$CASE_DIR/work/ssl/renew.example/rsa/fullchain.cer" ]]
@@ -157,6 +163,7 @@ printf 'chosen.example\nother.example\n' > "$CASE_DIR/work/cloudflare_domains_li
 SSL_ONLY_DOMAIN=chosen.example SSL_ONLY_TYPE=EC run_case
 assert_output "had_failures=false"
 assert_output "updated_domains=chosen.example"
+assert_output "updated_certificates=chosen.example/EC"
 [[ -s "$CASE_DIR/work/ssl/chosen.example/fullchain.cer" ]]
 [[ ! -e "$CASE_DIR/work/ssl/chosen.example/rsa/fullchain.cer" ]]
 [[ "$(wc -l < "$CASE_DIR/calls")" -eq 1 ]]
@@ -167,6 +174,7 @@ printf 'limited.example\n' > "$CASE_DIR/work/cloudflare_domains_list.txt"
 RATE_LIMIT_DOMAIN=limited.example run_case
 assert_output "had_failures=true"
 assert_output "failed_domains=limited.example/EC"
+assert_output "deferred_certificates=limited.example/RSA"
 [[ "$(wc -l < "$CASE_DIR/calls")" -eq 1 ]]
 
 
