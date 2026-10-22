@@ -52,7 +52,7 @@ certificate_usable() {
 }
 
 # 所有 CA 统一走 acme.sh DNS-01；备份目标仍为原有 SSL 文件结构。
-acme_# 429 仅在证书进入最后 7 天、且等待期超过 24 小时的安全缓冲时才允许应急切换。
+ # 429 仅在证书进入最后 7 天、且等待期超过 24 小时的安全缓冲时才允许应急切换。
 # 无现存有效证书属于首次签发/已过期场景，仍须确认等待期超过缓冲。
 certificate_seconds_left() {
   local cert="$1" key="$2" domain="$3" expiry
@@ -86,7 +86,7 @@ rate_limit_until() {
   fi
 }
 
-issue_one() {
+acme_issue_one() {
   local ca="$1" domain="$2" keylength="$3" log="$4"
   ssl_ca_register "$ca" || return 1
   ca_orders=$((ca_orders + 1))
