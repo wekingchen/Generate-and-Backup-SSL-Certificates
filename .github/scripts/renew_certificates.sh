@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-source .github/scripts/ca_provider.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ca_provider.sh"
 ssl_ca_init
 
 # 证书路径和 Dropbox 同步目录保持原有约定；本脚本只处理本地 ssl 目录。
