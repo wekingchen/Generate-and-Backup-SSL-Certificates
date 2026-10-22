@@ -1,0 +1,42 @@
+name: 一次性清理已合并 PR8 分支
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/cleanup_merged_pr8_once.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-merged-branch:
+    if: github.repository == 'wekingchen/Generate-and-Backup-SSL-Certificates' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 核实 PR 已合并后删除指定临时分支
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          merged=$(gh api "repos/$GITHUB_REPOSITORY/pulls/8" --jq '.merged')
+          head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/8" --jq '.head.ref')
+          base=$(gh api "repos/$GITHUB_REPOSITORY/pulls/8" --jq '.base.ref')
+          if [[ "$merged" != true || "$head" != feature/429-emergency-zerossl || "$base" != main ]]; then
+            echo "::error::PR8 的合并状态或目标分支不匹配，拒绝删除。"
+            exit 1
+          fi
+          target="repos/$GITHUB_REPOSITORY/git/refs/heads/feature/429-emergency-zerossl"
+          if gh api "$target" >/dev/null 2>&1; then
+            gh api --method DELETE "$target"
+            echo "✔ PR #8 已合并的开发分支已删除。"
+          else
+            echo "✔ PR #8 开发分支已不存在，无须重复删除。"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.name' |
+            grep -Fxq main
+          echo "✔ main 分支仍存在。"
