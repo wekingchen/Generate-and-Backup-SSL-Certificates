@@ -15,7 +15,7 @@ git clone -q --depth 1 --branch 3.1.6 https://github.com/acmesh-official/acme.sh
   echo "::error::acme.sh 源码版本校验失败。"
   exit 1
 }
-bash "$tmp/acme.sh/acme.sh" --install --home "$HOME/.acme.sh" --accountemail "$EMAIL" >/dev/null
+(cd "$tmp/acme.sh" && bash ./acme.sh --install --home "$HOME/.acme.sh" --accountemail "$EMAIL" >/dev/null)
 test -x "$ACME_PATH"
 rclone version | head -n 1
 "$ACME_PATH" --version
