@@ -40,6 +40,7 @@ fi
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 RENEW="$ROOT/.github/scripts/renew_certificates.sh"
+chmod +x "$ROOT/.github/tests/test_multi_ca.sh"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/fixture"
