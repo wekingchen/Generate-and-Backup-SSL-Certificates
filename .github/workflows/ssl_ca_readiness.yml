@@ -1,0 +1,86 @@
+name: SSL CA 接入预检查（只读）
+
+on:
+  workflow_dispatch:
+    inputs:
+      ca:
+        description: "要检查的备用 CA"
+        required: true
+        type: choice
+        options:
+          - zerossl
+          - google
+      domain:
+        description: "用于检查 CAA 的根域名（不带通配符）"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  ca-readiness:
+    runs-on: ubuntu-latest
+    name: 验证备用 CA 接入条件（不申请证书）
+    env:
+      SELECTED_CA: ${{ inputs.ca }}
+      CHECK_DOMAIN: ${{ inputs.domain }}
+      ZEROSSL_EAB_KID: ${{ secrets.ZEROSSL_EAB_KID }}
+      ZEROSSL_EAB_HMAC_KEY: ${{ secrets.ZEROSSL_EAB_HMAC_KEY }}
+      GOOGLE_EAB_KID: ${{ secrets.GOOGLE_EAB_KID }}
+      GOOGLE_EAB_HMAC_KEY: ${{ secrets.GOOGLE_EAB_HMAC_KEY }}
+    steps:
+      - name: 检查账户凭证及 ACME 目录
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$CHECK_DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$ ]]; then
+            echo "::error::域名格式无效（请填写根域名）。"
+            exit 1
+          fi
+          case "$SELECTED_CA" in
+            zerossl)
+              ca_name="ZeroSSL"
+              issuer="sectigo.com"
+              directory="https://acme.zerossl.com/v2/DV90"
+              kid="$ZEROSSL_EAB_KID"
+              hmac="$ZEROSSL_EAB_HMAC_KEY"
+              ;;
+            google)
+              ca_name="Google Public CA"
+              issuer="pki.goog"
+              directory="https://dv.acme-v02.api.pki.goog/directory"
+              kid="$GOOGLE_EAB_KID"
+              hmac="$GOOGLE_EAB_HMAC_KEY"
+              ;;
+            *)
+              echo "::error::不支持的 CA。"
+              exit 1 ;;
+          esac
+          if [[ -z "$kid" || -z "$hmac" ]]; then
+            echo "::error::$ca_name EAB 凭证不完整，请先在仓库 Secrets 中配置 KID 和 HMAC。"
+            exit 1
+          fi
+          echo "✔ 已配置 $ca_name 的两项 EAB 凭证（不公开内容）。"
+          curl --fail --silent --show-error --max-time 15 -o /dev/null "$directory"
+          echo "✔ $ca_name 的 ACME 目录可访问。"
+          caa=$(dig +short CAA "$CHECK_DOMAIN" || true)
+          {
+            echo "### 备用 CA 只读接入预检查"
+            echo "- CA：$ca_name"
+            echo "- 测试域名：$CHECK_DOMAIN"
+            echo "- EAB 配置：两项存在（未验证账户注册是否成功）"
+            echo "- ACME 目录：网络可访问（未申请证书）"
+            echo "- CAA 需要允许的标识：$issuer"
+            if [[ -n "$caa" ]]; then
+              echo "- 当前直接查询到的 CAA："
+              echo '~~~'
+              printf '%s\n' "$caa"
+              echo '~~~'
+            else
+              echo "- 当前根域名未直接查到 CAA 记录；仍需留意父域名继承及其他 DNS 配置。"
+            fi
+            echo "- 本检查不会证明 EAB 可注册、CAA 一定允许签发或 DNS-01 可通过，最终以实际 CA 验证为准。"
+            echo "- **本次没有签发证书、写入 Dropbox 或发送 Bark。**"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "✔ 只读预检查完成；如有 CAA 记录，请另行核对 issue 与 issuewild。"
