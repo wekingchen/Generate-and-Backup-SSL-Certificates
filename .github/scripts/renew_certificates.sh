@@ -17,6 +17,7 @@ valid_skipped=0
 failed_domains=""
 processed=0
 attempts=0
+ca_orders=0
 deferred_certificates=""
 skipped_duplicates=0
 # 用户维护的域名列表是唯一来源。每个有效域名只处理 EC/RSA 各一次。
@@ -54,6 +55,7 @@ certificate_usable() {
 acme_issue_one() {
   local ca="$1" domain="$2" keylength="$3" log="$4"
   ssl_ca_register "$ca" || return 1
+  ca_orders=$((ca_orders + 1))
   "$ACME_PATH" --issue --force --server "$ca" --dns dns_cf \
     -d "$domain" -d "*.$domain" --keylength "$keylength" >"$log" 2>&1
 }
@@ -227,7 +229,7 @@ if ((attempts > max_possible)); then
   echo "::error::签发请求数异常：$attempts > $max_possible，停止处理。"
   exit 1
 fi
-echo "✔ 本轮有效域名数：$processed；EC/RSA 理论上限：$max_possible；实际签发请求：$attempts。"
+echo "✔ 本轮有效域名数：$processed；EC/RSA 检查项目上限：$max_possible；实际申请项目：$attempts；CA 发单次数（含备用）：$ca_orders。"
 
 # 每个域名分别记录失败，不中止其他域名；备份之后由工作流统一返回失败状态。
 updated_domains=$(printf '%s\n' $updated_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
@@ -236,8 +238,8 @@ certificate_issuers=$(printf '%s\n' $certificate_issuers | sed '/^$/d' | sort -u
 failed_domains=$(printf '%s\n' $failed_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
 deferred_certificates=$(printf '%s\n' $deferred_certificates | sed '/^$/d' | sort -u | paste -sd ',' -)
 if [[ -n "$GITHUB_OUTPUT" ]]; then
-  printf 'updated_domains=%s\nupdated_certificates=%s\ncertificate_issuers=%s\nfailed_domains=%s\ndeferred_certificates=%s\nchecked_domains=%s\nvalid_skipped=%s\nattempts=%s\n' \
-    "$updated_domains" "$updated_certificates" "$certificate_issuers" "$failed_domains" "$deferred_certificates" "$processed" "$valid_skipped" "$attempts" >> "$GITHUB_OUTPUT"
+  printf 'updated_domains=%s\nupdated_certificates=%s\ncertificate_issuers=%s\nfailed_domains=%s\ndeferred_certificates=%s\nchecked_domains=%s\nvalid_skipped=%s\nattempts=%s\nca_orders=%s\n' \
+    "$updated_domains" "$updated_certificates" "$certificate_issuers" "$failed_domains" "$deferred_certificates" "$processed" "$valid_skipped" "$attempts" "$ca_orders" >> "$GITHUB_OUTPUT"
   if [[ -n "$failed_domains" ]]; then echo 'had_failures=true' >> "$GITHUB_OUTPUT"; else echo 'had_failures=false' >> "$GITHUB_OUTPUT"; fi
 fi
 
@@ -253,8 +255,9 @@ fi
   echo "- 限额冷却待重试：$deferred_certificates"
   echo "- 有效域名数（去重）：$processed"
   echo "- 重复域名条目：$skipped_duplicates"
-  echo "- 动态最大请求数（域名数 × 2）：$max_possible"
-  echo "- 本轮实际发起的 CA 签发请求：$attempts"
+  echo "- 动态最大检查项目数（域名数 × 2）：$max_possible"
+  echo "- 本轮需申请的证书项目：$attempts"
+  echo "- 本轮 CA 发单次数（含备用重试）：$ca_orders"
   echo "- 说明：仅在后续校验、Dropbox 备份成功后，才视为本轮处理完成。"
 } >> "$GITHUB_STEP_SUMMARY"
 
