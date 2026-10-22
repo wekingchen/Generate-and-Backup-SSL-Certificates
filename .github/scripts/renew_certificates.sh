@@ -153,7 +153,7 @@ issue_one() {
   fi
 
   attempts=$((attempts + 1))
-  local chosen_ca="$SSL_PRIMARY_CA" fallback_log ca_log detected_429=false
+  local chosen_ca="$SSL_PRIMARY_CA" fallback_log ca_log detected_429=false orders_before
   if [[ "$emergency_429" == true ]]; then
     # 保留 Let's Encrypt 原始 429 和 Retry-After 证据；ZeroSSL 日志只写临时文件。
     chosen_ca=zerossl
@@ -164,12 +164,16 @@ issue_one() {
     : > "$logf"
   fi
   echo "→ 生成 $domain 的 $type 证书（$chosen_ca，本轮第 $attempts 次）…"
+  orders_before=$ca_orders
 
   if ! acme_issue_one "$chosen_ca" "$domain" "$keylength" "$ca_log"; then
     if [[ "$emergency_429" == true ]]; then
       echo "::error::$domain $type 的 ZeroSSL 应急签发失败，本轮不再重新尝试。"
       rm -f "$ca_log"
-      record_429_emergency_failure "$logf" || return 1
+      # EAB 未注册、未向 CA 发单时不记为已用完应急机会。
+      if ((ca_orders > orders_before)); then
+        record_429_emergency_failure "$logf" || return 1
+      fi
       deferred_certificates="$deferred_certificates $domain/$type"
       return 1
     fi
@@ -192,6 +196,7 @@ issue_one() {
         [[ -z "$caa_records" ]] || echo "— $domain 的 CAA 设置需允许 ZeroSSL（通常为 sectigo.com）。"
       fi
       fallback_log=$(mktemp) || return 1
+      orders_before=$ca_orders
       if acme_issue_one zerossl "$domain" "$keylength" "$fallback_log"; then
         chosen_ca=zerossl
         echo "✔ $domain $type 已由备用 CA ZeroSSL 签发。"
@@ -199,7 +204,9 @@ issue_one() {
         echo "::error::$domain $type 的备用 CA 签发失败；未替换旧证书。"
         # 保留主 CA 的 429 证据，并标记此冷却窗口已经完成应急尝试。
         if [[ "$detected_429" == true ]]; then
-          record_429_emergency_failure "$logf" || { rm -f "$fallback_log"; return 1; }
+          if ((ca_orders > orders_before)); then
+            record_429_emergency_failure "$logf" || { rm -f "$fallback_log"; return 1; }
+          fi
           deferred_certificates="$deferred_certificates $domain/$type"
         fi
         rm -f "$fallback_log"
