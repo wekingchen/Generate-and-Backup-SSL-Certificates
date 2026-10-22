@@ -38,20 +38,9 @@ jobs:
       - name: Checkout master
         uses: actions/checkout@v6
 
-      - name: 安装受发行版签名保护的 rclone 与固定版本 acme.sh
+      - name: 安装并校验证书签发依赖
         shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq rclone
-          tmp=$(mktemp -d)
-          trap 'rm -rf "$tmp"' EXIT
-          git clone -q --depth 1 --branch 3.1.6 https://github.com/acmesh-official/acme.sh.git "$tmp/acme.sh"
-          [[ "$(git -C "$tmp/acme.sh" rev-parse HEAD)" == 807da6498377ee5e0cf43a78091f46f12dc59a89 ]] || { echo "::error::acme.sh 源码版本校验失败。"; exit 1; }
-          bash "$tmp/acme.sh/acme.sh" --install --home "$HOME/.acme.sh" --accountemail "$EMAIL" >/dev/null
-          test -x "$ACME_PATH"
-          rclone version | head -n 1
-          echo "✔ 软件包来源及 acme.sh 固定提交校验完成。"
+        run: bash .github/scripts/install_dependencies.sh
 
       - name: Configure rclone
         env:
