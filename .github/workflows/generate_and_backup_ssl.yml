@@ -135,7 +135,8 @@ jobs:
           DEFERRED_CERTIFICATES: ${{ steps.renew.outputs.deferred_certificates }}
           CHECKED_DOMAINS: ${{ steps.renew.outputs.checked_domains }}
           VALID_SKIPPED: ${{ steps.renew.outputs.valid_skipped }}
-          ISSUE_ATTEMPTS: ${{ steps.renew.outputs.attempts }}
+          ISSUE_ATTEMPTS: ${{ steps.renew.outputs.ca_orders }}
+          CERTIFICATE_ISSUERS: ${{ steps.renew.outputs.certificate_issuers }}
           CERTIFICATE_ISSUERS: ${{ steps.renew.outputs.certificate_issuers }}
           HAD_FAILURES: ${{ steps.renew.outputs.had_failures }}
           RENEW_OUTCOME: ${{ steps.renew.outcome }}
