@@ -23,7 +23,11 @@ jobs:
       - name: Syntax-check renewal shell
         run: |
           bash -n .github/scripts/renew_certificates.sh
+          bash -n .github/scripts/notify_bark.sh
           bash -n .github/tests/test_renew_certificates.sh
+          bash -n .github/tests/test_notify_bark.sh
 
       - name: Run tests without ACME or Dropbox access
-        run: bash .github/tests/test_renew_certificates.sh
+        run: |
+          bash .github/tests/test_renew_certificates.sh
+          bash .github/tests/test_notify_bark.sh
