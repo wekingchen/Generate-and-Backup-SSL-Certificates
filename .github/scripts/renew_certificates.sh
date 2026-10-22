@@ -52,7 +52,41 @@ certificate_usable() {
 }
 
 # 所有 CA 统一走 acme.sh DNS-01；备份目标仍为原有 SSL 文件结构。
-acme_issue_one() {
+acme_# 429 仅在证书进入最后 7 天、且等待期超过 24 小时的安全缓冲时才允许应急切换。
+# 无现存有效证书属于首次签发/已过期场景，仍须确认等待期超过缓冲。
+certificate_seconds_left() {
+  local cert="$1" key="$2" domain="$3" expiry
+  if ! certificate_usable "$cert" "$key" "$domain" 0; then
+    echo 0
+    return
+  fi
+  expiry=$(openssl x509 -in "$cert" -noout -enddate | sed 's/^notAfter=//')
+  echo $(( $(date -u -d "$expiry" +%s) - $(date -u +%s) ))
+}
+
+rate_limit_emergency() {
+  local remaining="$1" wait_until="$2" now
+  now=$(date -u +%s)
+  ((remaining <= 7 * 86400 && wait_until > now + 86400))
+}
+
+# 优先读取明确的 Retry-After 时间，否则使用已有日志修改时间 +34 小时。
+rate_limit_until() {
+  local log="$1" retry_text retry_ts log_ts
+  retry_text=$(grep -Eoi 'retry after[ :]+[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}( UTC|Z)?' "$log" | tail -n 1 | sed -E 's/^[^0-9]*//' || true)
+  retry_ts=0
+  if [[ -n "$retry_text" ]]; then
+    retry_ts=$(date -u -d "$retry_text" +%s 2>/dev/null || echo 0)
+  fi
+  if ((retry_ts > 0)); then
+    echo "$retry_ts"
+  else
+    log_ts=$(stat -c %Y "$log" 2>/dev/null || date -u +%s)
+    echo $((log_ts + 34 * 3600))
+  fi
+}
+
+issue_one() {
   local ca="$1" domain="$2" keylength="$3" log="$4"
   ssl_ca_register "$ca" || return 1
   ca_orders=$((ca_orders + 1))
@@ -85,27 +119,19 @@ issue_one() {
 
   mkdir -p "$dest" || return 1
 
-  # 只使用既有 issue 日志进行跨运行 429 冷却；不新增 Dropbox 文件结构。
+  local remaining_seconds cooldown_until emergency_429=false
+  remaining_seconds=$(certificate_seconds_left "$certf" "$keyf" "$domain")
+  # 只使用已有 issue 日志记录跨运行 429 冷却，不改变 Dropbox 目录结构。
   if [[ -s "$logf" ]] &&
      grep -Eiq '429|rate.?limit|too many certificates|Retry-After' "$logf"; then
-    local now_ts retry_text retry_ts log_ts fallback_until
-    now_ts=$(date -u +%s)
-    retry_text=$(grep -Eoi 'retry after[ :]+[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}( UTC|Z)?' "$logf" | tail -n 1 | sed -E 's/^[^0-9]*//' || true)
-    retry_ts=0
-    if [[ -n "$retry_text" ]]; then
-      retry_ts=$(date -u -d "$retry_text" +%s 2>/dev/null || echo 0)
-    fi
-    if ((retry_ts > now_ts)); then
-      echo "— $domain $type 处于 CA 限额冷却期，允许重试时间：$retry_text；跳过。"
-      deferred_certificates="$deferred_certificates $domain/$type"
-      return 0
-    fi
-    # 没有可解析 Retry-After 时，以日志原始修改时间为依据退避 34 小时。
-    if ((retry_ts == 0)); then
-      log_ts=$(stat -c %Y "$logf" 2>/dev/null || echo 0)
-      fallback_until=$((log_ts + 34 * 3600))
-      if ((fallback_until > now_ts)); then
-        echo "— $domain $type 曾触发 429，暂缓至 $(date -u -d "@$fallback_until" +'%Y-%m-%d %H:%M UTC')。"
+    cooldown_until=$(rate_limit_until "$logf")
+    if ((cooldown_until > $(date -u +%s))); then
+      if [[ "$SSL_CA_MODE" == auto && "$SSL_FALLBACK_CA" == zerossl ]] &&
+         rate_limit_emergency "$remaining_seconds" "$cooldown_until"; then
+        emergency_429=true
+        echo "::warning::$domain $type 处于 429 冷却期；旧证书剩余约 $((remaining_seconds / 86400)) 天，允许一次 ZeroSSL 应急签发。"
+      else
+        echo "— $domain $type 处于 429 冷却期，预计 UTC $(date -u -d "@$cooldown_until" +'%Y-%m-%d %H:%M') 后重试；旧证书剩余约 $((remaining_seconds / 86400)) 天。"
         deferred_certificates="$deferred_certificates $domain/$type"
         return 0
       fi
@@ -114,13 +140,26 @@ issue_one() {
 
   attempts=$((attempts + 1))
   local chosen_ca="$SSL_PRIMARY_CA" fallback_log
+  if [[ "$emergency_429" == true ]]; then
+    chosen_ca=zerossl
+  fi
   echo "→ 生成 $domain 的 $type 证书（$chosen_ca，本轮第 $attempts 次）…"
-  # 防止账户注册失败时沿用旧日志误判为 5xx/429。
+  # 仅实际发起请求时清空旧日志；预先判断冷却不会破坏上轮限流证据。
   : > "$logf"
   if ! acme_issue_one "$chosen_ca" "$domain" "$keylength" "$logf"; then
-    if [[ "$SSL_CA_MODE" == auto && "$SSL_FALLBACK_CA" == zerossl ]] &&
-       ssl_ca_transient_error "$logf"; then
-      echo "::warning::$domain $type 的 Let's Encrypt 服务暂时异常，准备受控尝试 ZeroSSL。"
+    local detected_429=false
+    if grep -Eiq '429|rate.?limit|too many certificates|Retry-After' "$logf"; then
+      detected_429=true
+    fi
+    if [[ "$SSL_CA_MODE" == auto && "$SSL_FALLBACK_CA" == zerossl && "$chosen_ca" == letsencrypt ]] &&
+       { ssl_ca_transient_error "$logf" ||
+         { [[ "$detected_429" == true ]] &&
+           rate_limit_emergency "$remaining_seconds" "$(rate_limit_until "$logf")"; }; }; then
+      if [[ "$detected_429" == true ]]; then
+        echo "::warning::$domain $type 遇到 Let's Encrypt 429，旧证书剩余约 $((remaining_seconds / 86400)) 天，进入 ZeroSSL 应急签发。"
+      else
+        echo "::warning::$domain $type 的 Let's Encrypt 服务暂时异常，准备受控尝试 ZeroSSL。"
+      fi
       # CAA 在 CA 端强制校验；此处只提供诊断提示，不自称实现完整 CAA 解析。
       if command -v dig >/dev/null 2>&1; then
         local caa_records
