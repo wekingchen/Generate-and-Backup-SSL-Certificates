@@ -70,6 +70,15 @@ rate_limit_emergency() {
   ((remaining <= 7 * 86400 && wait_until > now + 86400))
 }
 
+# 同一个 Let's Encrypt 429 冷却窗口内，ZeroSSL 应急失败最多尝试一次。
+# 使用已有的 issue.log 保存标记；追加后恢复原有 mtime，避免把 34h 冷却重新计时。
+record_429_emergency_failure() {
+  local log="$1" saved_mtime
+  saved_mtime=$(stat -c %Y "$log") || return 1
+  printf '\nSSL_EMERGENCY_ZEROSSL_ATTEMPTED=1\n' >> "$log" || return 1
+  touch -d "@$saved_mtime" "$log"
+}
+
 # 优先读取明确的 Retry-After 时间，否则使用已有日志修改时间 +34 小时。
 rate_limit_until() {
   local log="$1" retry_text retry_ts log_ts
@@ -126,6 +135,11 @@ issue_one() {
      grep -Eiq '429|rate.?limit|too many certificates|Retry-After' "$logf"; then
     cooldown_until=$(rate_limit_until "$logf")
     if ((cooldown_until > $(date -u +%s))); then
+      if grep -Fq 'SSL_EMERGENCY_ZEROSSL_ATTEMPTED=1' "$logf"; then
+        echo "— $domain $type 的 ZeroSSL 应急尝试在本冷却窗口内已经失败，不再重复请求。"
+        deferred_certificates="$deferred_certificates $domain/$type"
+        return 0
+      fi
       if [[ "$SSL_CA_MODE" == auto && "$SSL_FALLBACK_CA" == zerossl ]] &&
          rate_limit_emergency "$remaining_seconds" "$cooldown_until"; then
         emergency_429=true
@@ -139,15 +153,27 @@ issue_one() {
   fi
 
   attempts=$((attempts + 1))
-  local chosen_ca="$SSL_PRIMARY_CA" fallback_log
+  local chosen_ca="$SSL_PRIMARY_CA" fallback_log ca_log detected_429=false
   if [[ "$emergency_429" == true ]]; then
+    # 保留 Let's Encrypt 原始 429 和 Retry-After 证据；ZeroSSL 日志只写临时文件。
     chosen_ca=zerossl
+    ca_log=$(mktemp) || return 1
+  else
+    # 只有真正要重新向主 CA 发单时，才能覆盖上一轮 issue.log。
+    ca_log="$logf"
+    : > "$logf"
   fi
   echo "→ 生成 $domain 的 $type 证书（$chosen_ca，本轮第 $attempts 次）…"
-  # 仅实际发起请求时清空旧日志；预先判断冷却不会破坏上轮限流证据。
-  : > "$logf"
-  if ! acme_issue_one "$chosen_ca" "$domain" "$keylength" "$logf"; then
-    local detected_429=false
+
+  if ! acme_issue_one "$chosen_ca" "$domain" "$keylength" "$ca_log"; then
+    if [[ "$emergency_429" == true ]]; then
+      echo "::error::$domain $type 的 ZeroSSL 应急签发失败，本轮不再重新尝试。"
+      rm -f "$ca_log"
+      record_429_emergency_failure "$logf" || return 1
+      deferred_certificates="$deferred_certificates $domain/$type"
+      return 1
+    fi
+
     if grep -Eiq '429|rate.?limit|too many certificates|Retry-After' "$logf"; then
       detected_429=true
     fi
@@ -160,19 +186,22 @@ issue_one() {
       else
         echo "::warning::$domain $type 的 Let's Encrypt 服务暂时异常，准备受控尝试 ZeroSSL。"
       fi
-      # CAA 在 CA 端强制校验；此处只提供诊断提示，不自称实现完整 CAA 解析。
       if command -v dig >/dev/null 2>&1; then
         local caa_records
         caa_records=$(dig +short CAA "$domain" 2>/dev/null || true)
         [[ -z "$caa_records" ]] || echo "— $domain 的 CAA 设置需允许 ZeroSSL（通常为 sectigo.com）。"
       fi
-      fallback_log=$(mktemp)
+      fallback_log=$(mktemp) || return 1
       if acme_issue_one zerossl "$domain" "$keylength" "$fallback_log"; then
         chosen_ca=zerossl
         echo "✔ $domain $type 已由备用 CA ZeroSSL 签发。"
       else
-        echo "::error::$domain $type 的备用 CA 签发也失败；未替换旧证书。"
-        [[ ! -s "$fallback_log" ]] || tail -n 12 "$fallback_log"
+        echo "::error::$domain $type 的备用 CA 签发失败；未替换旧证书。"
+        # 保留主 CA 的 429 证据，并标记此冷却窗口已经完成应急尝试。
+        if [[ "$detected_429" == true ]]; then
+          record_429_emergency_failure "$logf" || { rm -f "$fallback_log"; return 1; }
+          deferred_certificates="$deferred_certificates $domain/$type"
+        fi
         rm -f "$fallback_log"
         return 1
       fi
@@ -182,6 +211,9 @@ issue_one() {
       [[ ! -s "$logf" ]] || tail -n 30 "$logf"
       return 1
     fi
+  fi
+  if [[ "$emergency_429" == true ]]; then
+    rm -f "$ca_log"
   fi
 
   if ! certificate_usable "$src/fullchain.cer" "$src/$domain.key" "$domain" "$threshold"; then
