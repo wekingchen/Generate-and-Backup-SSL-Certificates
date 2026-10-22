@@ -29,7 +29,7 @@ while IFS= read -r domain || [[ -n "$domain" ]]; do
       echo "::warning::$domain $type 证书或私钥缺失；保留其他有效证书的备份流程。"
       continue
     fi
-    bash "$ROOT/.github/scripts/verify_certificate.sh" "$cert" "$key" "$domain" 0 || exit 1
+    bash "$ROOT/.github/scripts/verify_certificate.sh" "$cert" "$key" "$domain" 0 "$type" || exit 1
     valid=$((valid+1))
   done
 done < cloudflare_domains_list.txt
