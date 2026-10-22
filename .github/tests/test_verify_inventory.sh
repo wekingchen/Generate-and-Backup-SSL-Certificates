@@ -78,4 +78,15 @@ if test_verifier "$TEMP/work/ssl/demo.example/fullchain.cer" "$TEMP/work/ssl/dem
   echo "Certificate below requested lifetime accepted"; exit 1
 fi
 
+echo "Validation Test 7: RSA key may not masquerade as EC P-256"
+if test_verifier "$TEMP/work/ssl/demo.example/rsa/fullchain.cer" \
+   "$TEMP/work/ssl/demo.example/rsa/private.key" demo.example 0 EC; then
+  echo "RSA key unexpectedly accepted as EC"; exit 1
+fi
+echo "Validation Test 8: EC key may not masquerade as RSA 2048"
+if test_verifier "$TEMP/work/ssl/demo.example/fullchain.cer" \
+   "$TEMP/work/ssl/demo.example/private.key" demo.example 0 RSA; then
+  echo "EC key unexpectedly accepted as RSA"; exit 1
+fi
+
 echo "All offline inventory and chain validation tests passed."
