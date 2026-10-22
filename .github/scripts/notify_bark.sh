@@ -88,94 +88,15 @@ if [[ "$updated_count" -gt 0 ]]; then
   else
     body="⚠️ 已签发但尚未确认备份：${updated_count} 张"
   fi
-  body+=
-if [[ "$failed_count" -gt 0 ]]; then
-  [[ -z "$body" ]] || body+=$'\n\n'
-  body+="❌ 签发失败：${failed_count} 项"
-  body+=$'\n'"$(render_pairs "$failed")"
-fi
-if [[ "$deferred_count" -gt 0 ]]; then
-  [[ -z "$body" ]] || body+=$'\n\n'
-  body+="⏳ 限额冷却待重试：${deferred_count} 张"
-  body+=$'\n'"$(render_pairs "$deferred")"
-fi
-[[ -z "$body" ]] || body+=$'\n\n'
-body+="📋 本轮：${checked} 个域名；发起 ${attempts} 次签发请求"
-body+=$'\n'"⏭ 无须更新：${valid_skipped} 张"
-if [[ "${BACKUP_OUTCOME:-skipped}" == success ]]; then
-  body+=$'\n'"📦 Dropbox：证书备份成功"
-else
-  body+=$'\n'"⚠️ Dropbox：证书备份失败或未执行"
-fi
-[[ "${VERIFY_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ 证书校验未通过或未执行"
-[[ "${GUARD_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ Dropbox 防误删检查未通过或未执行"
-[[ "${CONFIG_BACKUP_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ rclone 配置备份失败或未执行"
-[[ "${SECRET_UPDATE_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ GitHub Secret 更新失败或未执行"
-[[ "${RENEW_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ 续签脚本未正常完成"
-body+=$'\n'"🕒 $time_cn"
-body+=$'\n'"🔗 点击通知查看 GitHub 运行记录"
-
-payload=$(jq -n --arg title "$title" --arg body "$body" \
-  --arg url "$run_url" --arg group "SSL 证书管理" \
-  '{title:$title, body:$body, group:$group, url:$url}')
-
-# 不将 BARK_URL（含设备密钥）或完整请求内容打印到 GitHub 日志。
-if curl -fsS --max-time 15 -X POST \
-  -H 'Content-Type: application/json; charset=utf-8' \
-  --data-binary "$payload" "${BARK_URL%/}" >/dev/null; then
-  echo "✔ Bark 中文通知已发送（${title}）。"
-else
-  echo "::warning::Bark 推送失败，不改变原有证书签发或备份结果。"
-fi
-\n'"$(render_pairs "$updated")"
+  body+=$'\n'"$(render_pairs "$updated")"
   if [[ -n "$issuers" ]]; then
-    # 汇总真正签发的 CA，不在短信中重复枚举所有证书。
     declare -A ca_count=()
     IFS=',' read -r -a issuer_items <<< "$issuers"
     for issuer_item in "${issuer_items[@]}"; do
       issuer_ca="${issuer_item##*=}"
       ca_count["$issuer_ca"]=$(( ${ca_count[$issuer_ca]:-0} + 1 ))
     done
-    body+=
-if [[ "$failed_count" -gt 0 ]]; then
-  [[ -z "$body" ]] || body+=$'\n\n'
-  body+="❌ 签发失败：${failed_count} 项"
-  body+=$'\n'"$(render_pairs "$failed")"
-fi
-if [[ "$deferred_count" -gt 0 ]]; then
-  [[ -z "$body" ]] || body+=$'\n\n'
-  body+="⏳ 限额冷却待重试：${deferred_count} 张"
-  body+=$'\n'"$(render_pairs "$deferred")"
-fi
-[[ -z "$body" ]] || body+=$'\n\n'
-body+="📋 本轮：${checked} 个域名；发起 ${attempts} 次签发请求"
-body+=$'\n'"⏭ 无须更新：${valid_skipped} 张"
-if [[ "${BACKUP_OUTCOME:-skipped}" == success ]]; then
-  body+=$'\n'"📦 Dropbox：证书备份成功"
-else
-  body+=$'\n'"⚠️ Dropbox：证书备份失败或未执行"
-fi
-[[ "${VERIFY_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ 证书校验未通过或未执行"
-[[ "${GUARD_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ Dropbox 防误删检查未通过或未执行"
-[[ "${CONFIG_BACKUP_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ rclone 配置备份失败或未执行"
-[[ "${SECRET_UPDATE_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ GitHub Secret 更新失败或未执行"
-[[ "${RENEW_OUTCOME:-skipped}" == success ]] || body+=$'\n'"⚠️ 续签脚本未正常完成"
-body+=$'\n'"🕒 $time_cn"
-body+=$'\n'"🔗 点击通知查看 GitHub 运行记录"
-
-payload=$(jq -n --arg title "$title" --arg body "$body" \
-  --arg url "$run_url" --arg group "SSL 证书管理" \
-  '{title:$title, body:$body, group:$group, url:$url}')
-
-# 不将 BARK_URL（含设备密钥）或完整请求内容打印到 GitHub 日志。
-if curl -fsS --max-time 15 -X POST \
-  -H 'Content-Type: application/json; charset=utf-8' \
-  --data-binary "$payload" "${BARK_URL%/}" >/dev/null; then
-  echo "✔ Bark 中文通知已发送（${title}）。"
-else
-  echo "::warning::Bark 推送失败，不改变原有证书签发或备份结果。"
-fi
-\n'"🏛 签发机构："
+    ca_summary=""
     for ca in letsencrypt zerossl google; do
       if (( ${ca_count[$ca]:-0} > 0 )); then
         case "$ca" in
@@ -183,10 +104,10 @@ fi
           zerossl) label="ZeroSSL" ;;
           google) label="Google Trust Services" ;;
         esac
-        body+="$label ${ca_count[$ca]} 张；"
+        ca_summary+="$label ${ca_count[$ca]} 张、"
       fi
     done
-    body="${body%；}"
+    [[ -z "$ca_summary" ]] || body+=$'\n'"🏛 签发机构：${ca_summary%、}"
   fi
 fi
 if [[ "$failed_count" -gt 0 ]]; then
