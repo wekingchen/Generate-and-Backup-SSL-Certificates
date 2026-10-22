@@ -27,10 +27,12 @@ jobs:
           bash -n .github/scripts/ca_provider.sh
           bash -n .github/scripts/verify_certificate.sh
           bash -n .github/scripts/verify_inventory.sh
+          bash -n .github/scripts/guard_dropbox_deletions.sh
           bash -n .github/scripts/notify_bark.sh
           bash -n .github/tests/test_renew_certificates.sh
           bash -n .github/tests/test_multi_ca.sh
           bash -n .github/tests/test_verify_inventory.sh
+          bash -n .github/tests/test_backup_guard.sh
           bash -n .github/tests/test_notify_bark.sh
 
       - name: Run tests without ACME or Dropbox access
@@ -38,4 +40,5 @@ jobs:
           bash .github/tests/test_renew_certificates.sh
           bash .github/tests/test_multi_ca.sh
           bash .github/tests/test_verify_inventory.sh
+          bash .github/tests/test_backup_guard.sh
           bash .github/tests/test_notify_bark.sh
