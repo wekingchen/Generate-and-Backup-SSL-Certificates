@@ -207,4 +207,22 @@ assert_output "had_failures=false"
 assert_output "deferred_certificates=fallback.example/EC"
 [[ ! -e "$CASE_DIR/calls" ]]
 
+
+echo "Test 10: all six EC/RSA domain pairs can issue in one run with cap 12"
+new_case "six-domains"
+: > "$CASE_DIR/work/cloudflare_domains_list.txt"
+for i in 1 2 3 4 5 6; do
+  name="batch${i}.example"
+  make_pair "$name" EC "$CASE_DIR/fixtures/$name/EC"
+  make_pair "$name" RSA "$CASE_DIR/fixtures/$name/RSA"
+  printf '%s\n' "$name" >> "$CASE_DIR/work/cloudflare_domains_list.txt"
+done
+printf 'batch7.example\n' >> "$CASE_DIR/work/cloudflare_domains_list.txt"
+SSL_MAX_ISSUES_PER_RUN=12 run_case
+assert_output "had_failures=false"
+assert_output "deferred_certificates=batch7.example/EC,batch7.example/RSA"
+[[ "$(wc -l < "$CASE_DIR/calls")" -eq 12 ]]
+[[ -s "$CASE_DIR/work/ssl/batch6.example/rsa/fullchain.cer" ]]
+[[ ! -e "$CASE_DIR/work/ssl/batch7.example/fullchain.cer" ]]
+
 echo "All offline SSL renewal regression tests passed."
