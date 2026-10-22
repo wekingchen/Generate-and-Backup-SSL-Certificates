@@ -22,7 +22,7 @@ while (($#)); do
 done
 [[ -n "$payload" ]]
 printf '%s' "$payload" > "$MOCK_BARK_JSON"
-printf '{"code":200}\n'
+printf '{"code":%s}\n' "${MOCK_BARK_CODE:-200}"
 MOCK
 chmod +x "$TEMP/curl"
 
@@ -36,6 +36,7 @@ run_notification() {
     GITHUB_REPOSITORY="example/ssl" \
     GITHUB_RUN_ID="123456" \
     UPDATED_CERTIFICATES="" FAILED_CERTIFICATES="" DEFERRED_CERTIFICATES="" \
+    CRITICAL_DEFERRED_CERTIFICATES="" INVENTORY_MISSING="" HAD_CRITICAL_DEFERRED="false" HAD_INVENTORY_GAPS="false" \
     CHECKED_DOMAINS="6" VALID_SKIPPED="10" ISSUE_ATTEMPTS="2" HAD_FAILURES="false" \
     RENEW_OUTCOME="success" VERIFY_OUTCOME="success" GUARD_OUTCOME="success" \
     BACKUP_OUTCOME="success" CONFIG_BACKUP_OUTCOME="success" SECRET_UPDATE_OUTCOME="success" \
@@ -96,5 +97,25 @@ jq -e '(.body | contains("域名清单：包含无效条目"))' "$TEMP/request.j
 echo "Bark Test 7: no Bark URL means no notification"
 run_notification BARK_URL="" UPDATED_CERTIFICATES="good.example/EC"
 [[ ! -e "$TEMP/request.json" ]]
+
+echo "Bark Test 8: ordinary 429 cooldown must not silently skip notification"
+run_notification DEFERRED_CERTIFICATES="cool.example/EC"
+jq -e '.title == "SSL 证书限流冷却 · 1 项" and (.body | contains("cool.example：EC"))' \
+  "$TEMP/request.json" >/dev/null
+
+echo "Bark Test 9: critical deferred certificate produces high-priority warning"
+run_notification DEFERRED_CERTIFICATES="urgent.example/EC" \
+  CRITICAL_DEFERRED_CERTIFICATES="urgent.example/EC" HAD_CRITICAL_DEFERRED="true"
+jq -e '.title == "SSL 证书临期风险 · 1 项" and (.body | contains("7 天"))' \
+  "$TEMP/request.json" >/dev/null
+
+echo "Bark Test 10: inventory gap must be named explicitly"
+run_notification INVENTORY_MISSING="gap.example/RSA" HAD_INVENTORY_GAPS="true"
+jq -e '.title == "SSL 证书清单缺失 · 1 项" and (.body | contains("gap.example：RSA"))' \
+  "$TEMP/request.json" >/dev/null
+
+echo "Bark Test 11: HTTP success with business code failure must emit warning"
+MOCK_BARK_CODE=400 run_notification UPDATED_CERTIFICATES="fail.example/EC" > "$TEMP/business-failed.log"
+grep -Fq "Bark 未确认推送成功" "$TEMP/business-failed.log"
 
 echo "All offline Bark notification tests passed."

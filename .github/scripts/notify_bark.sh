@@ -11,6 +11,8 @@ fi
 updated="${UPDATED_CERTIFICATES:-}"
 failed="${FAILED_CERTIFICATES:-}"
 deferred="${DEFERRED_CERTIFICATES:-}"
+critical_deferred="${CRITICAL_DEFERRED_CERTIFICATES:-}"
+inventory_missing="${INVENTORY_MISSING:-}"
 checked="${CHECKED_DOMAINS:-0}"
 valid_skipped="${VALID_SKIPPED:-0}"
 attempts="${ISSUE_ATTEMPTS:-0}"
@@ -23,10 +25,10 @@ for outcome in "${RENEW_OUTCOME:-skipped}" "${VERIFY_OUTCOME:-skipped}" \
                "${CONFIG_BACKUP_OUTCOME:-skipped}" "${SECRET_UPDATE_OUTCOME:-skipped}"; do
   [[ "$outcome" == success ]] || problem=1
 done
-[[ "${HAD_FAILURES:-false}" == true ]] && problem=1
+[[ "${HAD_FAILURES:-false}" == true || "${HAD_CRITICAL_DEFERRED:-false}" == true || "${HAD_INVENTORY_GAPS:-false}" == true ]] && problem=1
 
 # 没有变动、没有签发错误且整体成功时保持静默，不产生无意义的每日推送。
-if [[ -z "$updated" && -z "$failed" && "$problem" -eq 0 ]]; then
+if [[ -z "$updated" && -z "$failed" && -z "$deferred" && "$problem" -eq 0 ]]; then
   echo "本轮无证书更新、无异常，跳过 Bark 通知。"
   exit 0
 fi
@@ -68,15 +70,23 @@ render_pairs() {
 updated_count=$(csv_count "$updated")
 failed_count=$(csv_count "$failed")
 deferred_count=$(csv_count "$deferred")
+critical_deferred_count=$(csv_count "$critical_deferred")
+inventory_missing_count=$(csv_count "$inventory_missing")
 run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
 time_cn=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M（北京时间）')
 
 if [[ "${BACKUP_OUTCOME:-skipped}" != success ]]; then
   title="SSL 证书备份异常"
+elif [[ "$critical_deferred_count" -gt 0 ]]; then
+  title="SSL 证书临期风险 · $critical_deferred_count 项"
+elif [[ "$inventory_missing_count" -gt 0 ]]; then
+  title="SSL 证书清单缺失 · $inventory_missing_count 项"
 elif [[ "$failed_count" -gt 0 || "${HAD_FAILURES:-false}" == true ]]; then
   title="SSL 续签部分失败"
 elif [[ "$problem" -ne 0 ]]; then
   title="SSL 处理完成 · 后续步骤异常"
+elif [[ "$deferred_count" -gt 0 && "$updated_count" -eq 0 ]]; then
+  title="SSL 证书限流冷却 · $deferred_count 项"
 else
   title="SSL 证书续签成功 · ${updated_count} 张"
 fi
@@ -120,6 +130,16 @@ if [[ "$deferred_count" -gt 0 ]]; then
   body+="⏳ 限额冷却待重试：${deferred_count} 张"
   body+=$'\n'"$(render_pairs "$deferred")"
 fi
+if [[ "$critical_deferred_count" -gt 0 ]]; then
+  [[ -z "$body" ]] || body+=$'\n\n'
+  body+="🚨 缺失、过期或剩余不超过 7 天，且被限流阻塞：${critical_deferred_count} 项"
+  body+=$'\n'"$(render_pairs "$critical_deferred")"
+fi
+if [[ "$inventory_missing_count" -gt 0 ]]; then
+  [[ -z "$body" ]] || body+=$'\n\n'
+  body+="🚨 证书清单存在缺失：${inventory_missing_count} 项"
+  body+=$'\n'"$(render_pairs "$inventory_missing")"
+fi
 [[ -z "$body" ]] || body+=$'\n\n'
 body+="📋 本轮：${checked} 个域名；发起 ${attempts} 次签发请求"
 body+=$'\n'"⏭ 无须更新：${valid_skipped} 张"
@@ -140,11 +160,15 @@ payload=$(jq -n --arg title "$title" --arg body "$body" \
   --arg url "$run_url" --arg group "SSL 证书管理" \
   '{title:$title, body:$body, group:$group, url:$url}')
 
-# 不将 BARK_URL（含设备密钥）或完整请求内容打印到 GitHub 日志。
+# HTTP 成功状态不代表 Bark 服务端接收成功，还需检验响应 code。
+# 不打印请求正文、设备密钥或原始响应。
+response_file=$(mktemp)
+trap 'rm -f "$response_file"' EXIT
 if curl -fsS --max-time 15 -X POST \
   -H 'Content-Type: application/json; charset=utf-8' \
-  --data-binary "$payload" "${BARK_URL%/}" >/dev/null; then
-  echo "✔ Bark 中文通知已发送（${title}）。"
+  --data-binary "$payload" "${BARK_URL%/}" > "$response_file" &&
+  jq -e '.code == 200' "$response_file" >/dev/null 2>&1; then
+  echo "✔ Bark 中文通知已被服务端确认（${title}）。"
 else
-  echo "::warning::Bark 推送失败，不改变原有证书签发或备份结果。"
+  echo "::warning::Bark 未确认推送成功（HTTP 或返回 code 异常）；证书签发/备份结果不受影响。"
 fi

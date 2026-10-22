@@ -28,7 +28,7 @@ jobs:
 
       - name: Install rclone
         run: |
-          curl https://rclone.org/install.sh | sudo bash
+          bash .github/scripts/install_rclone.sh
 
       - name: Configure rclone
         env:
@@ -42,7 +42,7 @@ jobs:
           set -eo pipefail
           rclone sync dropbox:$DROPBOX_PATH ./ssl $RCLONE_PARAMS --log-file=rclone_sync.log
           rclone copy dropbox:$DROPBOX_PATH/cloudflare_domains_list.txt ./ --log-file=rclone_sync.log
-          echo "SSL certificates and domain list synced."
+          echo "✔ 已读取证书和域名列表。"
 
       - name: Check expiry and update report
         run: |
@@ -58,8 +58,15 @@ jobs:
 
           check_cert() {
             cert="$1/fullchain.cer"
-            if [ ! -s "$cert" ]; then
+            key="$1/private.key"
+            domain="$2"
+            type="$3"
+            if [ ! -s "$cert" ] || [ ! -s "$key" ]; then
               echo "未找到|0"
+              return
+            fi
+            if ! bash .github/scripts/verify_certificate.sh "$cert" "$key" "$domain" 0 "$type" >/dev/null 2>&1; then
+              echo "校验失败|0"
               return
             fi
             if ! exp_date=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2); then
@@ -85,10 +92,15 @@ jobs:
           checked=0
           while IFS= read -r domain || [ -n "$domain" ]; do
             domain=$(printf '%s' "$domain" | tr -d '\r')
+            domain="${domain,,}"
             [ -n "$domain" ] || continue
             case "$domain" in \#*) continue;; esac
-            IFS='|' read -r ec_date ec_days <<< "$(check_cert "./ssl/$domain")"
-            IFS='|' read -r rsa_date rsa_days <<< "$(check_cert "./ssl/$domain/rsa")"
+            if [[ ! "$domain" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+              echo "::error::域名清单存在非法条目。"
+              exit 1
+            fi
+            IFS='|' read -r ec_date ec_days <<< "$(check_cert "./ssl/$domain" "$domain" EC)"
+            IFS='|' read -r rsa_date rsa_days <<< "$(check_cert "./ssl/$domain/rsa" "$domain" RSA)"
             printf "| %s | %s | %d | %s | %d |\n" \
               "$domain" "$ec_date" "$ec_days" "$rsa_date" "$rsa_days" \
               >> CHECK_LIST.md
@@ -131,4 +143,4 @@ jobs:
         if: ${{ always() }}
         run: |
           rm -rf ./ssl cloudflare_domains_list.txt
-          echo "Cleaned up local files."
+          echo "✔ 本地临时文件已清理。"

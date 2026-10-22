@@ -8,6 +8,7 @@ on:
       - ".github/workflows/ssl_offline_tests.yml"
       - ".github/workflows/generate_and_backup_ssl.yml"
       - ".github/workflows/check_ssl_expiry.yml"
+      - ".github/workflows/ssl_ca_readiness.yml"
   workflow_dispatch:
 
 permissions:
@@ -18,19 +19,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout pull request code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Syntax-check renewal shell
         run: |
           bash -n .github/scripts/renew_certificates.sh
           bash -n .github/scripts/ca_provider.sh
+          bash -n .github/scripts/install_dependencies.sh
+          bash -n .github/scripts/install_rclone.sh
+          bash -n .github/scripts/verify_certificate.sh
+          bash -n .github/scripts/verify_inventory.sh
+          bash -n .github/scripts/guard_dropbox_deletions.sh
           bash -n .github/scripts/notify_bark.sh
           bash -n .github/tests/test_renew_certificates.sh
           bash -n .github/tests/test_multi_ca.sh
+          bash -n .github/tests/test_verify_inventory.sh
+          bash -n .github/tests/test_backup_guard.sh
+          bash -n .github/tests/test_workflow_contract.sh
           bash -n .github/tests/test_notify_bark.sh
 
       - name: Run tests without ACME or Dropbox access
         run: |
           bash .github/tests/test_renew_certificates.sh
           bash .github/tests/test_multi_ca.sh
+          bash .github/tests/test_verify_inventory.sh
+          bash .github/tests/test_backup_guard.sh
+          bash .github/tests/test_workflow_contract.sh
           bash .github/tests/test_notify_bark.sh
+
+  dependency-smoke:
+    name: 依赖安装冒烟测试（无生产密钥）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出测试代码
+        uses: actions/checkout@v6
+      - name: 安装固定 SHA-256 的 rclone 与固定版本 acme.sh
+        env:
+          EMAIL: ssl-offline-ci@example.invalid
+          ACME_PATH: /home/runner/.acme.sh/acme.sh
+        run: bash .github/scripts/install_dependencies.sh
