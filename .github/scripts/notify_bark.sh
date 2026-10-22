@@ -14,6 +14,7 @@ deferred="${DEFERRED_CERTIFICATES:-}"
 checked="${CHECKED_DOMAINS:-0}"
 valid_skipped="${VALID_SKIPPED:-0}"
 attempts="${ISSUE_ATTEMPTS:-0}"
+issuers="${CERTIFICATE_ISSUERS:-}"
 
 # 只有所有关键步骤都通过，才算整个处理过程完整成功。
 problem=0
@@ -88,6 +89,26 @@ if [[ "$updated_count" -gt 0 ]]; then
     body="⚠️ 已签发但尚未确认备份：${updated_count} 张"
   fi
   body+=$'\n'"$(render_pairs "$updated")"
+  if [[ -n "$issuers" ]]; then
+    declare -A ca_count=()
+    IFS=',' read -r -a issuer_items <<< "$issuers"
+    for issuer_item in "${issuer_items[@]}"; do
+      issuer_ca="${issuer_item##*=}"
+      ca_count["$issuer_ca"]=$(( ${ca_count[$issuer_ca]:-0} + 1 ))
+    done
+    ca_summary=""
+    for ca in letsencrypt zerossl google; do
+      if (( ${ca_count[$ca]:-0} > 0 )); then
+        case "$ca" in
+          letsencrypt) label="Let's Encrypt" ;;
+          zerossl) label="ZeroSSL" ;;
+          google) label="Google Trust Services" ;;
+        esac
+        ca_summary+="$label ${ca_count[$ca]} 张、"
+      fi
+    done
+    [[ -z "$ca_summary" ]] || body+=$'\n'"🏛 签发机构：${ca_summary%、}"
+  fi
 fi
 if [[ "$failed_count" -gt 0 ]]; then
   [[ -z "$body" ]] || body+=$'\n\n'

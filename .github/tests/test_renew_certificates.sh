@@ -190,7 +190,7 @@ assert_output "had_failures=false"
 assert_output "updated_domains=first.example,second.example"
 assert_output "deferred_certificates="
 [[ "$(wc -l < "$CASE_DIR/calls")" -eq 4 ]]
-grep -Fqx -- '- 动态最大请求数（域名数 × 2）：4' "$CASE_DIR/summary"
+grep -Fqx -- '- 动态最大检查项目数（域名数 × 2）：4' "$CASE_DIR/summary"
 
 echo "Test 8: a persisted 429 retry-after prevents any further CA requests"
 new_case "cooldown"
@@ -230,7 +230,7 @@ assert_output "had_failures=false"
 assert_output "deferred_certificates="
 [[ "$(wc -l < "$CASE_DIR/calls")" -eq 14 ]]
 [[ -s "$CASE_DIR/work/ssl/batch7.example/rsa/fullchain.cer" ]]
-grep -Fqx -- '- 动态最大请求数（域名数 × 2）：14' "$CASE_DIR/summary"
+grep -Fqx -- '- 动态最大检查项目数（域名数 × 2）：14' "$CASE_DIR/summary"
 
 echo "Test 11: list shrink and duplicate/case-insensitive entries are processed once"
 new_case "duplicate"
@@ -242,7 +242,7 @@ assert_output "had_failures=false"
 assert_output "updated_domains=single.example"
 [[ "$(wc -l < "$CASE_DIR/calls")" -eq 2 ]]
 grep -Fqx -- '- 重复域名条目：2' "$CASE_DIR/summary"
-grep -Fqx -- '- 动态最大请求数（域名数 × 2）：2' "$CASE_DIR/summary"
+grep -Fqx -- '- 动态最大检查项目数（域名数 × 2）：2' "$CASE_DIR/summary"
 
 echo "Test 12: invalid entry does not trigger CA order"
 new_case "invalid"
@@ -253,6 +253,6 @@ run_case
 assert_output "had_failures=true"
 assert_output "failed_domains=invalid-entry"
 [[ "$(wc -l < "$CASE_DIR/calls")" -eq 2 ]]
-grep -Fqx -- '- 动态最大请求数（域名数 × 2）：2' "$CASE_DIR/summary"
+grep -Fqx -- '- 动态最大检查项目数（域名数 × 2）：2' "$CASE_DIR/summary"
 
 echo "All offline SSL renewal regression tests passed."

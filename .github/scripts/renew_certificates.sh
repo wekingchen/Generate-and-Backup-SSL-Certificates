@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ca_provider.sh"
+ssl_ca_init
+
 # 证书路径和 Dropbox 同步目录保持原有约定；本脚本只处理本地 ssl 目录。
 if [[ ! -s cloudflare_domains_list.txt || ! -d ssl ]]; then
   echo "::error::域名清单为空或证书同步目录不存在，停止处理以保护 Dropbox 备份。"
@@ -9,10 +12,12 @@ fi
 
 updated_domains=""
 updated_certificates=""
+certificate_issuers=""
 valid_skipped=0
 failed_domains=""
 processed=0
 attempts=0
+ca_orders=0
 deferred_certificates=""
 skipped_duplicates=0
 # 用户维护的域名列表是唯一来源。每个有效域名只处理 EC/RSA 各一次。
@@ -44,6 +49,15 @@ certificate_usable() {
   key_pub=$(openssl pkey -in "$key" -pubout -outform DER 2>/dev/null |
     sha256sum | cut -d ' ' -f1) || return 1
   [[ -n "$cert_pub" && "$cert_pub" == "$key_pub" ]]
+}
+
+# 所有 CA 统一走 acme.sh DNS-01；备份目标仍为原有 SSL 文件结构。
+acme_issue_one() {
+  local ca="$1" domain="$2" keylength="$3" log="$4"
+  ssl_ca_register "$ca" || return 1
+  ca_orders=$((ca_orders + 1))
+  "$ACME_PATH" --issue --force --server "$ca" --dns dns_cf \
+    -d "$domain" -d "*.$domain" --keylength "$keylength" >"$log" 2>&1
 }
 
 issue_one() {
@@ -99,12 +113,36 @@ issue_one() {
   fi
 
   attempts=$((attempts + 1))
-  echo "→ 生成 $domain 的 $type 证书…（本轮第 $attempts 次）"
-  if ! "$ACME_PATH" --issue --force --server letsencrypt --dns dns_cf \
-    -d "$domain" -d "*.$domain" --keylength "$keylength" >"$logf" 2>&1; then
-    echo "::error:: $domain $type 签发失败（日志末尾）："
-    tail -n 30 "$logf"
-    return 1
+  local chosen_ca="$SSL_PRIMARY_CA" fallback_log
+  echo "→ 生成 $domain 的 $type 证书（$chosen_ca，本轮第 $attempts 次）…"
+  # 防止账户注册失败时沿用旧日志误判为 5xx/429。
+  : > "$logf"
+  if ! acme_issue_one "$chosen_ca" "$domain" "$keylength" "$logf"; then
+    if [[ "$SSL_CA_MODE" == auto && "$SSL_FALLBACK_CA" == zerossl ]] &&
+       ssl_ca_transient_error "$logf"; then
+      echo "::warning::$domain $type 的 Let's Encrypt 服务暂时异常，准备受控尝试 ZeroSSL。"
+      # CAA 在 CA 端强制校验；此处只提供诊断提示，不自称实现完整 CAA 解析。
+      if command -v dig >/dev/null 2>&1; then
+        local caa_records
+        caa_records=$(dig +short CAA "$domain" 2>/dev/null || true)
+        [[ -z "$caa_records" ]] || echo "— $domain 的 CAA 设置需允许 ZeroSSL（通常为 sectigo.com）。"
+      fi
+      fallback_log=$(mktemp)
+      if acme_issue_one zerossl "$domain" "$keylength" "$fallback_log"; then
+        chosen_ca=zerossl
+        echo "✔ $domain $type 已由备用 CA ZeroSSL 签发。"
+      else
+        echo "::error::$domain $type 的备用 CA 签发也失败；未替换旧证书。"
+        [[ ! -s "$fallback_log" ]] || tail -n 12 "$fallback_log"
+        rm -f "$fallback_log"
+        return 1
+      fi
+      rm -f "$fallback_log"
+    else
+      echo "::error::$domain $type 的 $chosen_ca 签发失败；不会盲目切换 CA。"
+      [[ ! -s "$logf" ]] || tail -n 30 "$logf"
+      return 1
+    fi
   fi
 
   if ! certificate_usable "$src/fullchain.cer" "$src/$domain.key" "$domain" "$threshold"; then
@@ -135,6 +173,7 @@ issue_one() {
 
   updated_domains="$updated_domains $domain"
   updated_certificates="$updated_certificates $domain/$type"
+  certificate_issuers="$certificate_issuers $domain/$type=$chosen_ca"
   echo "✔ 已安装 $domain 的 $type 证书。"
   return 0
 }
@@ -190,16 +229,17 @@ if ((attempts > max_possible)); then
   echo "::error::签发请求数异常：$attempts > $max_possible，停止处理。"
   exit 1
 fi
-echo "✔ 本轮有效域名数：$processed；EC/RSA 理论上限：$max_possible；实际签发请求：$attempts。"
+echo "✔ 本轮有效域名数：$processed；EC/RSA 检查项目上限：$max_possible；实际申请项目：$attempts；CA 发单次数（含备用）：$ca_orders。"
 
 # 每个域名分别记录失败，不中止其他域名；备份之后由工作流统一返回失败状态。
 updated_domains=$(printf '%s\n' $updated_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
 updated_certificates=$(printf '%s\n' $updated_certificates | sed '/^$/d' | sort -u | paste -sd ',' -)
+certificate_issuers=$(printf '%s\n' $certificate_issuers | sed '/^$/d' | sort -u | paste -sd ',' -)
 failed_domains=$(printf '%s\n' $failed_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
 deferred_certificates=$(printf '%s\n' $deferred_certificates | sed '/^$/d' | sort -u | paste -sd ',' -)
 if [[ -n "$GITHUB_OUTPUT" ]]; then
-  printf 'updated_domains=%s\nupdated_certificates=%s\nfailed_domains=%s\ndeferred_certificates=%s\nchecked_domains=%s\nvalid_skipped=%s\nattempts=%s\n' \
-    "$updated_domains" "$updated_certificates" "$failed_domains" "$deferred_certificates" "$processed" "$valid_skipped" "$attempts" >> "$GITHUB_OUTPUT"
+  printf 'updated_domains=%s\nupdated_certificates=%s\ncertificate_issuers=%s\nfailed_domains=%s\ndeferred_certificates=%s\nchecked_domains=%s\nvalid_skipped=%s\nattempts=%s\nca_orders=%s\n' \
+    "$updated_domains" "$updated_certificates" "$certificate_issuers" "$failed_domains" "$deferred_certificates" "$processed" "$valid_skipped" "$attempts" "$ca_orders" >> "$GITHUB_OUTPUT"
   if [[ -n "$failed_domains" ]]; then echo 'had_failures=true' >> "$GITHUB_OUTPUT"; else echo 'had_failures=false' >> "$GITHUB_OUTPUT"; fi
 fi
 
@@ -208,13 +248,16 @@ fi
   echo ""
   echo "- 已更新域名：$updated_domains"
   echo "- 已更新证书类型：$updated_certificates"
+  echo "- 实际签发机构：$certificate_issuers"
+  echo "- 主 CA：$SSL_PRIMARY_CA；备用 CA：$SSL_FALLBACK_CA"
   echo "- 原证书仍有效：$valid_skipped 张"
   echo "- 签发失败：$failed_domains"
   echo "- 限额冷却待重试：$deferred_certificates"
   echo "- 有效域名数（去重）：$processed"
   echo "- 重复域名条目：$skipped_duplicates"
-  echo "- 动态最大请求数（域名数 × 2）：$max_possible"
-  echo "- 本轮实际发起的 CA 签发请求：$attempts"
+  echo "- 动态最大检查项目数（域名数 × 2）：$max_possible"
+  echo "- 本轮需申请的证书项目：$attempts"
+  echo "- 本轮 CA 发单次数（含备用重试）：$ca_orders"
   echo "- 说明：仅在后续校验、Dropbox 备份成功后，才视为本轮处理完成。"
 } >> "$GITHUB_STEP_SUMMARY"
 
