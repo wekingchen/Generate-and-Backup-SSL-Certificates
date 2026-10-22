@@ -51,6 +51,7 @@ jobs:
         run: bash .github/scripts/renew_certificates.sh
 
       - name: Validate new certificates
+        id: validate
         run: |
           set -eo pipefail
           count=0
@@ -72,6 +73,7 @@ jobs:
           echo "✔ 已验证 $count 张证书及对应私钥。"
 
       - name: Guard remote Dropbox files against accidental deletion
+        id: remote_guard
         run: |
           set -eo pipefail
           rclone lsf dropbox:$DROPBOX_PATH -R --files-only | LC_ALL=C sort > /tmp/ssl_remote_files
@@ -107,20 +109,24 @@ jobs:
           gh secret set RCLONE_CONFIG -b"$(cat ~/.config/rclone/rclone.conf)"
 
       - name: Notify certificate result
-        if: ${{ always() && steps.renew.outcome == 'success' && steps.backup.outcome == 'success' }}
+        # 也通知校验或备份失败，不能让“更新成功”的推送掩盖后续失败。
+        if: ${{ always() }}
         env:
           BARK_URL: ${{ secrets.BARK_URL }}
-          UPDATED_DOMAINS: ${{ steps.renew.outputs.updated_domains }}
-          FAILED_DOMAINS: ${{ steps.renew.outputs.failed_domains }}
-        run: |
-          if [ -z "$BARK_URL" ] || { [ -z "$UPDATED_DOMAINS" ] && [ -z "$FAILED_DOMAINS" ]; }; then
-            echo "无须发送 Bark 通知。"
-            exit 0
-          fi
-          body="已更新：$UPDATED_DOMAINS；失败：$FAILED_DOMAINS"
-          encoded=$(jq -rn --arg body "$body" '$body|@uri')
-          curl -fsS --max-time 15 -X POST "$BARK_URL/SSL%20Updated/$encoded" ||
-            echo "::warning::Bark 通知失败，不影响证书备份结果。"
+          UPDATED_CERTIFICATES: ${{ steps.renew.outputs.updated_certificates }}
+          FAILED_CERTIFICATES: ${{ steps.renew.outputs.failed_domains }}
+          DEFERRED_CERTIFICATES: ${{ steps.renew.outputs.deferred_certificates }}
+          CHECKED_DOMAINS: ${{ steps.renew.outputs.checked_domains }}
+          VALID_SKIPPED: ${{ steps.renew.outputs.valid_skipped }}
+          ISSUE_ATTEMPTS: ${{ steps.renew.outputs.attempts }}
+          HAD_FAILURES: ${{ steps.renew.outputs.had_failures }}
+          RENEW_OUTCOME: ${{ steps.renew.outcome }}
+          VERIFY_OUTCOME: ${{ steps.validate.outcome }}
+          GUARD_OUTCOME: ${{ steps.remote_guard.outcome }}
+          BACKUP_OUTCOME: ${{ steps.backup.outcome }}
+          CONFIG_BACKUP_OUTCOME: ${{ steps.config_backup.outcome }}
+          SECRET_UPDATE_OUTCOME: ${{ steps.secret_update.outcome }}
+        run: bash .github/scripts/notify_bark.sh
 
       - name: Report final result
         if: ${{ always() }}
