@@ -20,6 +20,8 @@ echo "Workflow Contract Test 3: Cloudflare tokens not exposed during package ins
 ! sed -n '/^env:/,/^jobs:/p' "$wf" | grep -Eq 'CF_TOKEN|CF_ACCOUNT_ID'
 grep -Fq 'run: bash .github/scripts/install_dependencies.sh' "$wf"
 grep -Fq '807da6498377ee5e0cf43a78091f46f12dc59a89' .github/scripts/install_dependencies.sh
+grep -Fq '349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702' .github/scripts/install_rclone.sh
+grep -Fq 'run: bash .github/scripts/install_rclone.sh' .github/workflows/check_ssl_expiry.yml
 
 echo "Workflow Contract Test 4: safe inventory and Dropbox guard block backup on failure"
 grep -Fq 'run: bash .github/scripts/verify_inventory.sh' "$wf"
