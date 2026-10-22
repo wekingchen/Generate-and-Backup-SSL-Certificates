@@ -12,11 +12,11 @@ failed_domains=""
 processed=0
 attempts=0
 deferred_certificates=""
-max_attempts="${SSL_MAX_ISSUES_PER_RUN:-0}"
-if [[ ! "$max_attempts" =~ ^[0-9]+$ ]]; then
-  echo "::error::单次签发次数上限必须是非负整数。"
-  exit 1
-fi
+skipped_duplicates=0
+# 用户维护的域名列表是唯一来源。每个有效域名只处理 EC/RSA 各一次。
+# 因此单轮理论上最多发起 2 * 有效去重域名数 个签发请求，
+# 不再依赖工作流里写死的 2/12/其他全局张数。
+declare -A seen_domains=()
 
 # 仅受控生产验收使用；正常定时任务不设置这两个变量。
 only_domain="${SSL_ONLY_DOMAIN:-}"
@@ -95,12 +95,6 @@ issue_one() {
     fi
   fi
 
-  if ((max_attempts > 0 && attempts >= max_attempts)); then
-    echo "— $domain $type 达到每轮 $max_attempts 次签发上限，本轮跳过。"
-    deferred_certificates="$deferred_certificates $domain/$type"
-    return 0
-  fi
-
   attempts=$((attempts + 1))
   echo "→ 生成 $domain 的 $type 证书…（本轮第 $attempts 次）"
   if ! "$ACME_PATH" --issue --force --server letsencrypt --dns dns_cf \
@@ -144,14 +138,23 @@ issue_one() {
 while IFS= read -r domain || [[ -n "$domain" ]]; do
   domain=$(printf '%s' "$domain" | tr -d '\r')
   [[ -z "$domain" || "$domain" == \#* ]] && continue
-  [[ -n "$only_domain" && "$domain" != "$only_domain" ]] && continue
-  processed=$((processed + 1))
+  domain="${domain,,}" # DNS 域名不区分大小写；统一大小写便于去重。
+  [[ -n "$only_domain" && "$domain" != "${only_domain,,}" ]] && continue
 
-  if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$ ]]; then
+  # 拒绝空标签、连续点号、首尾连字符等错误输入，避免错误签发请求。
+  if [[ ! "$domain" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
     echo "::error::域名列表包含格式异常的条目，已跳过。"
     failed_domains="$failed_domains invalid-entry"
     continue
   fi
+
+  if [[ -n "${seen_domains[$domain]+x}" ]]; then
+    echo "— $domain 在域名清单中重复，已跳过重复条目。"
+    skipped_duplicates=$((skipped_duplicates + 1))
+    continue
+  fi
+  seen_domains["$domain"]=1
+  processed=$((processed + 1))
 
   for type in EC RSA; do
     [[ -n "$only_type" && "$type" != "$only_type" ]] && continue
@@ -174,6 +177,14 @@ if [[ "$processed" -eq 0 ]]; then
   exit 1
 fi
 
+# 与静态配额无关，实际单轮请求数由本次远端域名清单动态决定。
+max_possible=$((processed * 2))
+if ((attempts > max_possible)); then
+  echo "::error::签发请求数异常：$attempts > $max_possible，停止处理。"
+  exit 1
+fi
+echo "✔ 本轮有效域名数：$processed；EC/RSA 理论上限：$max_possible；实际签发请求：$attempts。"
+
 # 每个域名分别记录失败，不中止其他域名；备份之后由工作流统一返回失败状态。
 updated_domains=$(printf '%s\n' $updated_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
 failed_domains=$(printf '%s\n' $failed_domains | sed '/^$/d' | sort -u | paste -sd ',' -)
@@ -188,8 +199,11 @@ fi
   echo ""
   echo "- 已更新域名：$updated_domains"
   echo "- 签发失败：$failed_domains"
-  echo "- 限额冷却或分批延期：$deferred_certificates"
-  echo "- 本轮发起的 CA 签发请求：$attempts"
+  echo "- 限额冷却待重试：$deferred_certificates"
+  echo "- 有效域名数（去重）：$processed"
+  echo "- 重复域名条目：$skipped_duplicates"
+  echo "- 动态最大请求数（域名数 × 2）：$max_possible"
+  echo "- 本轮实际发起的 CA 签发请求：$attempts"
   echo "- 说明：仅在后续校验、Dropbox 备份成功后，才视为本轮处理完成。"
 } >> "$GITHUB_STEP_SUMMARY"
 
