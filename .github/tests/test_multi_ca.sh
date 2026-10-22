@@ -30,6 +30,10 @@ if [[ "${1:-}" == "--issue" ]]; then
     echo "HTTP 429 rateLimited too many certificates" >&2
     exit 37
   fi
+  if [[ "$ca" == zerossl && "${MOCK_ZERO_FAIL:-}" == "503" ]]; then
+    echo "HTTP 503 Service Unavailable" >&2
+    exit 38
+  fi
   suffix="" 
   [[ "$keylen" == ec-256 ]] && suffix="_ecc"
   mkdir -p "$HOME/.acme.sh/$domain$suffix"
@@ -66,7 +70,7 @@ run_case() {
     GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-workflow_dispatch}" \
     GITHUB_OUTPUT="$CASE/output" GITHUB_STEP_SUMMARY="$CASE/summary" \
     MOCK_CA_CALLS="$CASE/ca_calls" MOCK_REG_CALLS="$CASE/registers" \
-    MOCK_FIXTURE="$TMP/fixture" MOCK_LE_FAIL="${MOCK_LE_FAIL:-}" \
+    MOCK_FIXTURE="$TMP/fixture" MOCK_LE_FAIL="${MOCK_LE_FAIL:-}" MOCK_ZERO_FAIL="${MOCK_ZERO_FAIL:-}" \
     SSL_ONLY_TYPE=EC SSL_CA_MODE="${SSL_CA_MODE:-auto}" \
     SSL_FALLBACK_CA="${SSL_FALLBACK_CA:-off}" \
     ZEROSSL_EAB_KID="${ZEROSSL_EAB_KID:-}" \
@@ -139,6 +143,64 @@ SSL_FALLBACK_CA=zerossl MOCK_LE_FAIL=429 \
 expect_output "had_failures=false"
 expect_output "certificate_issuers=multi.example/EC=zerossl"
 expect_output "ca_orders=2"
+
+echo "Multi-CA Test 4d: persisted 429 + failed ZeroSSL preserves cooldown and tries once"
+new_case "429-persisted-one-shot"
+mkdir -p "$CASE/work/ssl/multi.example"
+printf 'HTTP 429 rateLimited too many certificates\n' > "$CASE/work/ssl/multi.example/EC_issue.log"
+touch -d '@1780000000' "$CASE/work/ssl/multi.example/EC_issue.log"
+# 既有日志日期需处于当前 34h 冷却窗口，避免测试依赖固定时间。
+touch "$CASE/work/ssl/multi.example/EC_issue.log"
+original_mtime=$(stat -c %Y "$CASE/work/ssl/multi.example/EC_issue.log")
+SSL_FALLBACK_CA=zerossl MOCK_ZERO_FAIL=503 \
+  ZEROSSL_EAB_KID=kid ZEROSSL_EAB_HMAC_KEY=secret run_case
+expect_output "had_failures=true"
+expect_output "ca_orders=1"
+grep -Fq 'HTTP 429' "$CASE/work/ssl/multi.example/EC_issue.log"
+grep -Fq 'SSL_EMERGENCY_ZEROSSL_ATTEMPTED=1' "$CASE/work/ssl/multi.example/EC_issue.log"
+[[ "$(stat -c %Y "$CASE/work/ssl/multi.example/EC_issue.log")" -eq "$original_mtime" ]]
+[[ "$(wc -l < "$CASE/ca_calls")" -eq 1 ]]
+SSL_FALLBACK_CA=zerossl MOCK_ZERO_FAIL=503 \
+  ZEROSSL_EAB_KID=kid ZEROSSL_EAB_HMAC_KEY=secret run_case
+expect_output "deferred_certificates=multi.example/EC"
+[[ "$(wc -l < "$CASE/ca_calls")" -eq 1 ]]
+
+echo "Multi-CA Test 4e: fresh 429 + ZeroSSL failure retains retry evidence"
+new_case "429-fresh-both-fail"
+SSL_FALLBACK_CA=zerossl MOCK_LE_FAIL=429 MOCK_ZERO_FAIL=503 \
+  ZEROSSL_EAB_KID=kid ZEROSSL_EAB_HMAC_KEY=secret run_case
+expect_output "had_failures=true"
+expect_output "ca_orders=2"
+grep -Fq '429' "$CASE/work/ssl/multi.example/EC_issue.log"
+grep -Fq 'SSL_EMERGENCY_ZEROSSL_ATTEMPTED=1' "$CASE/work/ssl/multi.example/EC_issue.log"
+[[ "$(wc -l < "$CASE/ca_calls")" -eq 2 ]]
+SSL_FALLBACK_CA=zerossl MOCK_LE_FAIL=429 MOCK_ZERO_FAIL=503 \
+  ZEROSSL_EAB_KID=kid ZEROSSL_EAB_HMAC_KEY=secret run_case
+expect_output "deferred_certificates=multi.example/EC"
+[[ "$(wc -l < "$CASE/ca_calls")" -eq 2 ]]
+
+echo "Multi-CA Test 4f: short Retry-After never triggers ZeroSSL"
+new_case "429-short-retry"
+mkdir -p "$CASE/work/ssl/multi.example"
+soon=$(date -u -d '+2 hours' '+%Y-%m-%d %H:%M:%S UTC')
+printf 'HTTP 429 rateLimited retry after %s\n' "$soon" > "$CASE/work/ssl/multi.example/EC_issue.log"
+SSL_FALLBACK_CA=zerossl ZEROSSL_EAB_KID=kid ZEROSSL_EAB_HMAC_KEY=secret run_case
+expect_output "deferred_certificates=multi.example/EC"
+expect_output "ca_orders=0"
+[[ ! -e "$CASE/ca_calls" ]]
+
+echo "Multi-CA Test 4g: 20-day cert + persisted 429 remains in cooldown"
+new_case "429-valid-persisted"
+mkdir -p "$CASE/work/ssl/multi.example"
+openssl req -x509 -new -sha256 -days 20 -key "$TMP/fixture/private.key" \
+  -subj "/CN=multi.example" -addext "subjectAltName=DNS:multi.example,DNS:*.multi.example" \
+  -out "$CASE/work/ssl/multi.example/fullchain.cer" >/dev/null 2>&1
+cp "$TMP/fixture/private.key" "$CASE/work/ssl/multi.example/private.key"
+printf 'HTTP 429 rateLimited retry after 2099-01-01 00:00:00 UTC\n' > "$CASE/work/ssl/multi.example/EC_issue.log"
+SSL_FALLBACK_CA=zerossl ZEROSSL_EAB_KID=kid ZEROSSL_EAB_HMAC_KEY=secret run_case
+expect_output "deferred_certificates=multi.example/EC"
+expect_output "ca_orders=0"
+[[ ! -e "$CASE/ca_calls" ]]
 
 echo "Multi-CA Test 5: missing EAB cannot bypass primary failure"
 new_case "missing-eab"
