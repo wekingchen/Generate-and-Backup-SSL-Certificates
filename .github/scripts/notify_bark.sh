@@ -156,9 +156,11 @@ fi
 body+=$'\n'"🕒 $time_cn"
 body+=$'\n'"🔗 点击通知查看 GitHub 运行记录"
 
+# Bark 官方 ttl 单位为秒，且仅对归档的历史消息生效：
+# 强制保存此通知，6 小时（21600 秒）后由 Bark 客户端清理。
 payload=$(jq -n --arg title "$title" --arg body "$body" \
   --arg url "$run_url" --arg group "SSL 证书管理" \
-  '{title:$title, body:$body, group:$group, url:$url}')
+  '{title:$title, body:$body, group:$group, url:$url, isArchive:"1", ttl:21600}')
 
 # HTTP 成功状态不代表 Bark 服务端接收成功，还需检验响应 code。
 # 不打印请求正文、设备密钥或原始响应。

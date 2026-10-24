@@ -54,6 +54,9 @@ jq -e '
   and (.body | contains("失败：") | not)
   and .group == "SSL 证书管理"
   and .url == "https://github.com/example/ssl/actions/runs/123456"
+  and .isArchive == "1"
+  and .ttl == 21600
+  and (.ttl | type) == "number"
 ' "$TEMP/request.json" >/dev/null
 
 echo "Bark Test 2: partial failure should contain affected algorithms and no fake success"
@@ -117,5 +120,9 @@ jq -e '.title == "SSL 证书清单缺失 · 1 项" and (.body | contains("gap.ex
 echo "Bark Test 11: HTTP success with business code failure must emit warning"
 MOCK_BARK_CODE=400 run_notification UPDATED_CERTIFICATES="fail.example/EC" > "$TEMP/business-failed.log"
 grep -Fq "Bark 未确认推送成功" "$TEMP/business-failed.log"
+
+echo "Bark Test 12: unsuccessful renewal alerts also retain six-hour TTL"
+run_notification FAILED_CERTIFICATES="failed.example/EC" HAD_FAILURES="true"
+jq -e '.isArchive == "1" and .ttl == 21600 and (.title | contains("失败"))' "$TEMP/request.json" >/dev/null
 
 echo "All offline Bark notification tests passed."
